@@ -45,7 +45,7 @@ class ExtractionCrawler (Crawler):
         self.logger.write(start_run_msgs)
 
         data_path = self.root
-        pickle_path = os.path.join(data_path, 'pickles')
+        pickle_path = os.path.join(data_path, 'raw-pickles')
         ensure_dir_exists(pickle_path, self.logger)
         self.loader = data_loading.DataLoader(data_path, pickle_path, self.logger)
 
@@ -209,15 +209,22 @@ class ExtractionCrawler (Crawler):
             # Pickled metapickle already exists.
             # Update the metapickle
             self.logger.write([f"Updating {metapickle_name}..."])
-            existing = self.loader.load_pickle(metapickle_name)
-            existing.update(pickle_dict)
-            pickle_dict = existing
+            existing = self.loader.load_pickle(metapickle_name, use_source=False)
+            pickle_dict = self._merge_metapickle(pickle_dict, existing)
         self.make_pickle(metapickle_name, pickle_dict)
 
         self.logger.decrease_global_indent()
         self.logger.write(["Light table data extraction complete"])
         #self.check_for_Qs_errors(data)
         #self.check_for_Qs_duplication
+    
+    def _merge_metapickle(self, new_dict, old_dict):
+        nd = new_dict
+        od = old_dict
+        merge = lambda a, b: list(set(a + b))
+        old_dict.update(
+            {nk: merge(nd[nk], od[nk] if nk in od else []) for nk in nd.keys()})
+        return old_dict
 
     def build_period_dict(self, sediment_flux_txt):
         # Build a dict of associated Qs#.txt files per 20 minute periods
