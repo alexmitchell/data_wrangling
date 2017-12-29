@@ -24,7 +24,7 @@ class ExtractionCrawler (Crawler):
     # The Extraction Crawler does the initial work of finding all the data 
     # files and converting them to pickles
 
-    def __init__(self, log_filepath="./log-extraction-crawler.txt"):
+    def __init__(self, log_filepath="./log-files/extraction-crawler.txt"):
         logger = Logger(log_filepath, default_verbose=True)
         Crawler.__init__(self, logger)
 
