@@ -169,7 +169,7 @@ class ExtractionCrawler (Crawler):
         # Prepare kwargs for reading Qs text files
         Qs_column_names = [
                 # Timing and meta data
-                #'elapsed-time sec', <- Calculate this column
+                #'elapsed-time sec', <- Calculate this column later
                 'timestamp', 'missing ratio', 'vel', 'sd vel', 'number vel',
                 # Bedload transport masses (g)
                 'Bedload all', 'Bedload 0.5', 'Bedload 0.71', 'Bedload 1',
@@ -219,16 +219,25 @@ class ExtractionCrawler (Crawler):
         #self.check_for_Qs_duplication
     
     def _merge_metapickle(self, new_dict, old_dict):
+        merge = lambda a, b: list(set(a + b))
+        file_name = lambda path: path.rsplit('_',1)[1]
+        file_num = lambda name: int(name[2:-4]) if name[2:-4].isdigit() else 0
+        sort_key = lambda path: file_num(file_name(path))
+
+        #period_dict[period_path].sort(key=file_num)
+
         nd = new_dict
         od = old_dict
-        merge = lambda a, b: list(set(a + b))
         old_dict.update(
             {nk: merge(nd[nk], od[nk] if nk in od else []) for nk in nd.keys()})
+        for key in old_dict:
+            old_dict[key].sort(key=sort_key)
+        print(old_dict)
         return old_dict
 
     def build_period_dict(self, sediment_flux_txt):
         # Build a dict of associated Qs#.txt files per 20 minute periods
-        # Dict values are sorted lists of Qs#.txt files
+        # Dict values are sorted lists of Qs#.txt file paths
         # Dict keys are the results directory paths
         period_dict = {}
         self.logger.write(["Building dict of Qs files"])
@@ -267,7 +276,7 @@ class ExtractionCrawler (Crawler):
                 # Read and prep raw data
                 filepath = os.path.join(period_path, name)
                 data = self.loader.load_txt(filepath, Qs_kwargs, is_path=True)
-                    
+
                 # Make pickles
                 picklepaths += self.make_pickle(pkl_name, data)
 
