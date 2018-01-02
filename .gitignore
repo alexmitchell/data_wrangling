@@ -1,8 +1,10 @@
+log-files/
 setup.py
 src/__init__.py
 
 # Swap files
 *.py.swp
+*.swp
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
