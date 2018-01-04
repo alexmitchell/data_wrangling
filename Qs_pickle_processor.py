@@ -16,6 +16,7 @@ from time import asctime
 import data_loading
 from helpyr_misc import nsplit
 from helpyr_misc import ensure_dir_exists
+from helpyr_misc import print_entire_df
 from logger import Logger
 
 # Outline:
@@ -25,12 +26,6 @@ from logger import Logger
 #   - conflict between qs and qs#?
 # 4) combine qs dataframes
 # 5) error check combined qs dataframe
-
-def print_entire_df(df):
-    # Print all rows in a dataframe
-    with pd.option_context('display.max_rows', None):
-        print(df)
-
 
 class QsPickleProcessor:
 
@@ -82,7 +77,7 @@ class QsPickleProcessor:
             _, experiment, step, rperiod = nsplit(self.current_period_path, 3)
             period = rperiod[8:]
             msg = f"Processing {experiment} {step} {period}..."
-            self.pkl_name = '-'.join(['Qs', experiment, step, period])
+            self.pkl_name = '_'.join(['Qs', experiment, step, period])
 
             indent_function(self.process_period, before_msg=msg)
         self.logger.end_output()

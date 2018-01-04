@@ -18,7 +18,7 @@ import global_settings
 
 class PlottingCrawler (Crawler):
 
-    def __init__(self, log_filepath="./log-plotting-crawler.txt", no_log=False):
+    def __init__(self, log_filepath="./log-files/log-plotting-crawler.txt", no_log=False):
         logger = Logger(log_filepath, default_verbose=True, no_log=no_log)
         Crawler.__init__(self, logger)
 

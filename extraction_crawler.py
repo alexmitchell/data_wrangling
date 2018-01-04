@@ -31,6 +31,10 @@ class ExtractionCrawler (Crawler):
         self.mode_dict['extract-manual']      = self.run_extract_manual_data
         self.mode_dict['extract-light-table'] = self.run_extract_light_table_data
 
+    def end(self):
+        Crawler.end(self)
+        self.logger.end()
+
     def make_pickle(self, pkl_name, data):
         self.logger.write(["Performing picklery on {}".format(pkl_name)])
         self.logger.increase_global_indent()
