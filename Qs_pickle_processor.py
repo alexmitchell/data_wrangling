@@ -167,22 +167,12 @@ class QsPickleProcessor:
         exclude_cols = ['timestamp', 'missing ratio', 'vel', 'sd vel', 'number vel']
         target_cols = [col for col in combined.columns.values
                            if col not in exclude_cols]
-        #bedload_columns = [   # Columns containing bedload data
-        #        'Bedload all', 'Bedload 0.5', 'Bedload 0.71', 'Bedload 1',
-        #        'Bedload 1.4', 'Bedload 2', 'Bedload 2.8', 'Bedload 4',
-        #        'Bedload 5.6', 'Bedload 8', 'Bedload 11.2', 'Bedload 16',
-        #        'Bedload 22', 'Bedload 32', 'Bedload 45',
-        #        ]
 
         # Set up a few lambda functions
         get_num = lambda s: int(s[2:]) # get the file number from the name
-        #
-        #get_bedload_subset = lambda c: c.loc[:, bedload_columns]
         get_target_subset = lambda c: c.loc[:, target_cols]
-        #
         # Find rows with data. Should remove meta columns beforehand
-        # Will select rows with non-null values (selects zero rows
-        #find_data_rows = lambda df: ((df != 0) & df.notnull()).any(axis=1)
+        # Will select rows with non-null values (selects zero rows)
         find_data_rows = lambda df: df.notnull().all(axis=1)
 
         for raw_chunk, name in zip(self.Qsn_data, self.Qsn_names):
@@ -202,8 +192,6 @@ class QsPickleProcessor:
 
             # Find overlap
             overlap_rows = chunk_rows & combined_rows
-            #overlap_A = raw_chunk[overlap_rows]
-            #overlap_B = combined[overlap_rows]
 
             # Add chunk to combined array
             combined.loc[chunk_rows, 1:] = raw_chunk[chunk_rows]
@@ -280,9 +268,6 @@ class QsPickleProcessor:
         Qs_both_nan = combined_Qs.isnull() & raw_Qs.isnull()
         both_nan_rows = Qs_both_nan.any(axis=1)
         Qs_diff.loc[both_nan_rows, :] = False
-        #Qs_either_nan = combined_Qs.isnull() | raw_Qs.isnull()
-        #Qs_same = (combined_Qs == raw_Qs) | Qs_both_nan
-        #Qs_diff = ~Qs_same.loc[~both_nan_rows, :]
 
         # Ignore columns that are likely to be different and don't seem to have 
         # any practical value. (I think....?)
