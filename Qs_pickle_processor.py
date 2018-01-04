@@ -54,7 +54,6 @@ class QsPickleProcessor:
         # Start up logger
         self.logger = Logger(self.log_filepath, default_verbose=True)
         ensure_dir_exists(self.pickle_destination, self.logger)
-        self.logger.write_section_break()
         self.logger.write(["Begin pickle processor output", asctime()])
 
         # Start up loader
@@ -84,7 +83,9 @@ class QsPickleProcessor:
             period = rperiod[8:]
             msg = f"Processing {experiment} {step} {period}..."
             self.pkl_name = '-'.join(['Qs', experiment, step, period])
+
             indent_function(self.process_period, before_msg=msg)
+        self.logger.end_output()
 
 
     def process_period(self):
@@ -156,24 +157,33 @@ class QsPickleProcessor:
         # This functions assembles them into a complete Qs dataframe.  
         # Overlapping rows are converted to nan because I can't see any way to 
         # choose which one to keep.
-        if self.Qs0_data is not None and not self.Qsn_data:
+        if not self.Qsn_data:
             self.logger.write("No chunks to combine.")
             return
 
         combined = self._make_like_df(self.Qsn_data[0], ['timestamp'])
         accumulating_overlap = None
 
-        bedload_columns = [   # Columns containing bedload data
-                'Bedload all', 'Bedload 0.5', 'Bedload 0.71', 'Bedload 1',
-                'Bedload 1.4', 'Bedload 2', 'Bedload 2.8', 'Bedload 4',
-                'Bedload 5.6', 'Bedload 8', 'Bedload 11.2', 'Bedload 16',
-                'Bedload 22', 'Bedload 32', 'Bedload 45',
-                ]
+        exclude_cols = ['timestamp', 'missing ratio', 'vel', 'sd vel', 'number vel']
+        target_cols = [col for col in combined.columns.values
+                           if col not in exclude_cols]
+        #bedload_columns = [   # Columns containing bedload data
+        #        'Bedload all', 'Bedload 0.5', 'Bedload 0.71', 'Bedload 1',
+        #        'Bedload 1.4', 'Bedload 2', 'Bedload 2.8', 'Bedload 4',
+        #        'Bedload 5.6', 'Bedload 8', 'Bedload 11.2', 'Bedload 16',
+        #        'Bedload 22', 'Bedload 32', 'Bedload 45',
+        #        ]
+
         # Set up a few lambda functions
         get_num = lambda s: int(s[2:]) # get the file number from the name
-        get_bedload_subset = lambda c: c.loc[:, bedload_columns]
+        #
+        #get_bedload_subset = lambda c: c.loc[:, bedload_columns]
+        get_target_subset = lambda c: c.loc[:, target_cols]
+        #
         # Find rows with data. Should remove meta columns beforehand
-        find_data_rows = lambda df: ((df != 0) & df.notnull()).any(axis=1)
+        # Will select rows with non-null values (selects zero rows
+        #find_data_rows = lambda df: ((df != 0) & df.notnull()).any(axis=1)
+        find_data_rows = lambda df: df.notnull().all(axis=1)
 
         for raw_chunk, name in zip(self.Qsn_data, self.Qsn_names):
             # Each raw dataframe contains only a chunk of the overall data.  
@@ -183,8 +193,8 @@ class QsPickleProcessor:
             self.logger.write(f"Processing chunk {ch_num} of {max_num}")
 
             # Get bedload subsets
-            bedload_chunk = get_bedload_subset(raw_chunk)
-            bedload_combined = get_bedload_subset(combined)
+            bedload_chunk = get_target_subset(raw_chunk)
+            bedload_combined = get_target_subset(combined)
 
             # Find rows with data
             chunk_rows = find_data_rows(bedload_chunk)
@@ -208,11 +218,12 @@ class QsPickleProcessor:
         self.combined_Qs = combined
         self.accumulating_overlap = accumulating_overlap
 
-    def _make_like_df(self, like_df, columns_to_copy=[], fill=0.0):
+    def _make_like_df(self, like_df, columns_to_copy=[], fill_val=np.nan):
         # Make a dataframe like the Qs data with a few columns copied and the 
         # rest filled with a default value
 
-        np_like = np.empty_like(like_df).fill(fill)
+        np_like = np.empty_like(like_df.values)
+        np_like.fill(fill_val)
         pd_like = pd.DataFrame(np_like,
                 columns=like_df.columns, index=like_df.index)
 
@@ -242,6 +253,10 @@ class QsPickleProcessor:
             self.logger.write(f"Only {using} found." +
                               "No difference check needed.")
 
+        # Set rows with any Nan values to entirely Nan values
+        nan_rows = self.final_output.isnull().any(axis=1)
+        self.final_output.loc[nan_rows, 1:] = np.nan
+
         # Check for accumulated overlap
         overlap = self.accumulating_overlap
         if combined_exists and overlap.any():
@@ -257,9 +272,17 @@ class QsPickleProcessor:
         combined_Qs = self.combined_Qs
 
         # Element-wise bool difference between dataframes
+        Qs_diff = (combined_Qs != raw_Qs)
+        # Rows that have Nan values in both dataframes will be thrown out and 
+        # should not count towards the difference.
+        # Rows that started with a value and ended with Nan should count. (such 
+        # as overlap rows)
         Qs_both_nan = combined_Qs.isnull() & raw_Qs.isnull()
-        Qs_same = (combined_Qs == raw_Qs) | Qs_both_nan
-        Qs_diff = ~Qs_same
+        both_nan_rows = Qs_both_nan.any(axis=1)
+        Qs_diff.loc[both_nan_rows, :] = False
+        #Qs_either_nan = combined_Qs.isnull() | raw_Qs.isnull()
+        #Qs_same = (combined_Qs == raw_Qs) | Qs_both_nan
+        #Qs_diff = ~Qs_same.loc[~both_nan_rows, :]
 
         # Ignore columns that are likely to be different and don't seem to have 
         # any practical value. (I think....?)
