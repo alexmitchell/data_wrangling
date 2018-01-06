@@ -44,6 +44,8 @@ class QsPickleProcessor:
         self.metapickle_name = "Qs_metapickle"
         
         # tolerance for difference between files
+        # This value is more to highlight very different dataframes than have 
+        # any physical meaning.
         self.difference_tolerance = 0.02
 
         # Start up logger

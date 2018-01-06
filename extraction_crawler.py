@@ -33,7 +33,7 @@ class ExtractionCrawler (Crawler):
 
     def end(self):
         Crawler.end(self)
-        self.logger.end()
+        self.logger.end_output()
 
     def make_pickle(self, pkl_name, data):
         self.logger.write(["Performing picklery on {}".format(pkl_name)])
@@ -236,7 +236,6 @@ class ExtractionCrawler (Crawler):
             {nk: merge(nd[nk], od[nk] if nk in od else []) for nk in nd.keys()})
         for key in old_dict:
             old_dict[key].sort(key=sort_key)
-        print(old_dict)
         return old_dict
 
     def build_period_dict(self, sediment_flux_txt):
