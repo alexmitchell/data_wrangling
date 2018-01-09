@@ -13,21 +13,36 @@ import pandas as pd
 from time import asctime
 
 # From Helpyr
-import data_loading
+from data_loading import DataLoader
+from logger import Logger
+from crawler import Crawler
 from helpyr_misc import nsplit
 from helpyr_misc import ensure_dir_exists
 from helpyr_misc import print_entire_df
-from logger import Logger
 
-# Outline:
-# 1) load Qs_metapickle
-# 2) load Qs pickles for a period
-# 3) error check raw qs dataframes
-#   - conflict between qs and qs#?
-# 4) combine qs dataframes
-# 5) error check combined qs dataframe
+# Primary Pickle Processor takes raw Qs and Qsn pickles and condenses them into 
+# one Qs pickle for each period. ie. Does processing within each period.
 
-class QsPickleProcessor:
+# Secondary Pickle Processor figures out the relationship between period 
+# pickles. Finds missing periods and accumulated time.
+
+# These could have been combined into one processor, but I happened to write 
+# the secondary for a separate analysis and thought it would be better to 
+# include here.
+
+
+# To do:
+# Create way to delete bad sections in combined Qs
+
+class PrimaryPickleProcessor:
+
+    # Outline:
+    # 1) load Qs_metapickle
+    # 2) load Qs pickles for a period
+    # 3) error check raw qs dataframes
+    #   - conflict between qs and qs#?
+    # 4) combine qs dataframes
+    # 5) error check combined qs dataframe
 
     error_codes = {
             'CQF' : "Conflicting Qs files",
@@ -35,13 +50,16 @@ class QsPickleProcessor:
             'MMD' : "Mismatched Data",
             }
 
-    def __init__(self):
+    def __init__(self, root_dir, output_txt=False):
         # File locations
-        self.root_dir = "/home/alex/feed-timing/data/extracted-lighttable-results"
+        self.root_dir = root_dir
         self.pickle_source = f"{self.root_dir}/raw-pickles"
         self.pickle_destination = f"{self.root_dir}/processed-pickles"
-        self.log_filepath = "./log-files/Qs_pickle_processor.txt"
+        self.txt_destination = f"{self.root_dir}/combined-txts"
+        self.log_filepath = "./log-files/Qs_primary_processor.txt"
         self.metapickle_name = "Qs_metapickle"
+        self.statspickle_name = "Qs_summary_stats"
+        self.output_txt = output_txt
         
         # tolerance for difference between files
         # This value is more to highlight very different dataframes than have 
@@ -51,10 +69,10 @@ class QsPickleProcessor:
         # Start up logger
         self.logger = Logger(self.log_filepath, default_verbose=True)
         ensure_dir_exists(self.pickle_destination, self.logger)
-        self.logger.write(["Begin pickle processor output", asctime()])
+        self.logger.write(["Begin Primary Pickle Processor output", asctime()])
 
         # Start up loader
-        self.loader = data_loading.DataLoader(self.pickle_source, 
+        self.loader = DataLoader(self.pickle_source, 
                 self.pickle_destination, self.logger)
 
     def run(self):
@@ -63,6 +81,10 @@ class QsPickleProcessor:
 
         # Load Qs_metapickle
         self.metapickle = self.loader.load_pickle(self.metapickle_name)
+        self.raw_file_counter = 0
+        self.combined_file_counter = 0
+        self.summary_stats = {} # (pkl_name, stat_type) : stat_row}
+        self.pd_summary_stats = None
 
         for period_path in self.metapickle:
             # attribute data to be reset every period
@@ -82,6 +104,21 @@ class QsPickleProcessor:
             self.pkl_name = '_'.join(['Qs', experiment, step, period])
 
             indent_function(self.process_period, before_msg=msg)
+
+        # Make a summary stats dataframe
+        self.pd_summary_stats = pd.DataFrame.from_dict(
+                self.summary_stats, orient='index')
+        indent_function(self.produce_stats_pickle, 
+                before_msg="Producing statistics pickle",
+                after_msg="Statistics pickle produced!")
+
+        if self.output_txt:
+            indent_function(self.write_stats_txt, 
+                    before_msg="Writing statistics txt",
+                    after_msg="Done!")
+
+        self.logger.write([f"{self.raw_file_counter} raw pickles processed",
+                           f"{self.combined_file_counter} combined pickles produced"])
         self.logger.end_output()
 
 
@@ -111,10 +148,21 @@ class QsPickleProcessor:
                         "Running secondary error checks...",
                         "Finished secondary error checks!")
 
+        # Calc summary stats
+        indent_function(self.calculate_stats,
+                        "Calculating summary stats...",
+                        "Summary stats calculated!")
+
         # Write to pickle
         indent_function(self.produce_processed_pickle,
                         "Producing processed pickles...",
                         "Processed pickles produced!")
+
+        # Write a combined Qs txt file
+        if self.output_txt:
+                indent_function(self.write_combined_txt,
+                        "Writing combined txt file...",
+                        "Done writing file!")
 
     def load_data(self):
         # Load the sorted list of paths for this period
@@ -127,6 +175,7 @@ class QsPickleProcessor:
             stripped_name = pkl_name.split('.')[0]
             Qs_name = stripped_name.split('_')[-1]
             bedload_data = Qs_period_data[Qs_path]
+            self.raw_file_counter += 1
 
             if Qs_name == 'Qs':
                 assert(self.Qs0_data is None)
@@ -142,7 +191,7 @@ class QsPickleProcessor:
 
         if self.Qs0_data is not None and self.Qsn_data:
             name_list = ', '.join(self.Qsn_names)
-            error_msg = QsPickleProcessor.error_codes['CQF']
+            error_msg = PrimaryPickleProcessor.error_codes['CQF']
             self.logger.warning([error_msg,
                 "Qs.txt and Qs#.txt files both exist",
                f"Qs#.txt: {name_list}"])
@@ -229,7 +278,7 @@ class QsPickleProcessor:
         if raw_exists and combined_exists:
             self._difference_check()
         elif not(raw_exists or combined_exists):
-            error_msg = QsPickleProcessor.error_codes['NDF']
+            error_msg = PrimaryPickleProcessor.error_codes['NDF']
             self.logger.warning([error_msg,
                 "Both the raw Qs pickle and combined Qs df are missing."])
         else:
@@ -285,7 +334,7 @@ class QsPickleProcessor:
             tolerance = self.difference_tolerance
 
             is_tolerant = '' if diff_ratio < tolerance else ' NOT'
-            error_msg = QsPickleProcessor.error_codes['MMD']
+            error_msg = PrimaryPickleProcessor.error_codes['MMD']
             msgs = [error_msg,
                     f"Difference ratio of {diff_ratio:.3f} is{is_tolerant} within tolerance of {tolerance}.",
                     f"{diff_rows_count} conflicting rows found out of {rows_count}",
@@ -309,19 +358,301 @@ class QsPickleProcessor:
             self.logger.write(["Qs.txt matches combined Qs chunk data",
                               "(Excluding velocity columns and missing ratio)"])
             self.final_output = combined_Qs
+    def calculate_stats(self):
+        # Calc column averages and sums
+        name = self.pkl_name
+        data = self.final_output
+        av = data.mean(axis=0)
+        sum = data.sum(axis=0)
+        nans = data.isnull().sum(axis=0)
+
+        for stat, row in zip(['av', 'sum', 'nans'],[av, sum, nans]):
+            key = (name, stat)
+            # Add the series data to the summary stats dict
+            # The dict will be converted into a multiindexed dataframe later
+            self.summary_stats[key] = row
+            #row_str = row.to_string()
+            #msg = f"Stats for {key} : {row_str}"
+            #self.logger.write(msg)
+
     def produce_processed_pickle(self):
         if self.final_output is not None:
             prepickles = {self.pkl_name : self.final_output}
             # prepickles is a dictionary of {'pickle name':data}
             self.loader.produce_pickles(prepickles)
+            self.combined_file_counter += 1
         else:
-            error_msg = QsPickleProcessor.error_codes['NDF']
+            error_msg = PrimaryPickleProcessor.error_codes['NDF']
             self.logger.warning([error_msg,
                 f"Pickle not created for {self.pkl_name}"])
+
+    def write_combined_txt(self):
+        filename = f"{self.pkl_name}.txt"
+        filepath = os.path.join(self.txt_destination, filename)
+        data = self.final_output
+        
+        self.loader.save_txt(data, filepath, is_path=True)
+
+
+    def produce_stats_pickle(self):
+        summary_stats = self.pd_summary_stats
+        pkl_name = self.statspickle_name 
+
+        if summary_stats.empty:
+            self.logger.write(["No new stats. Nothing to do."])
+            return
+
+        if self.loader.is_pickled(pkl_name):
+            self.logger.write(["Stats pickle already exists. Updating..."])
+            old_stats = self.loader.load_pickle(pkl_name, use_source=False)
+            unchanged_indices = ~old_stats.index.isin(summary_stats)
+            new_indices_strs = summary_stats.index.levels[0].__str__().split('\n')
+            summary_stats = pd.concat([old_stats[unchanged_indices],
+                                       summary_stats])
+            self.logger.write(["Updated index values are:"] + new_indices_strs)
+        else:
+            self.logger.write(["Making new stats pickle. Updating..."])
+            # prepickles is a dictionary of {'pickle name':data}
+
+        prepickles = {pkl_name : summary_stats}
+        self.loader.produce_pickles(prepickles)
+        self.combined_file_counter += 1
+
+    def write_stats_txt(self):
+        filename = f"{self.statspickle_name}.txt"
+        filepath = os.path.join(self.txt_destination, filename)
+        data = self.pd_summary_stats
+        
+        kwargs = {'index'  : True,
+                  'header' : True,
+                  }
+        self.loader.save_txt(data, filepath, kwargs=kwargs, is_path=True)
+
+
+
+class PeriodData:
+    # The PeriodData class is meant as a simple container to store all the 
+    # information associated with each period
+
+    period_ranking = {"rising" : 0, "falling" : 1,
+            "50L" : 00, "62L" : 10, "75L" : 20, "87L" : 30, "100L" : 40,
+            "t00-t10" : 0, "t10-t20" : 1, "t00-t20" : 2,
+            "t20-t30" : 3, "t30-t40" : 4, "t20-t40" : 5,
+            "t40-t50" : 6, "t50-t60" : 7, "t40-t60" : 8, "t00-t60" : 9,
+                      }
+        
+    def __init__(self, picklepath):
+        self.picklepath = picklepath
+        self.pkl_name = nsplit(picklepath, 1)[1].split('.',1)[0]
+        _, self.exp_code, self.step, self.period = self.pkl_name.split('_')
+        
+        # Calculate period ranks
+        limb, flow = self.step.split('-')
+        ranking = PeriodData.period_ranking
+        get_ranking = lambda l, d, p: d + p + 2*l*(40-d)
+        self.rank = get_ranking(*[ranking[k] for k in (limb, flow, self.period)])
+
+        self.data = None
+
+    def load_data(self, loader):
+        self.data = loader.load_pickle(self.picklepath, add_path=False)
+
+    def produce_period_pickle(self, loader):
+        # Overwrites pickle produced in primary processing.
+        # New pickle has accumulated time as an index
+        loader.produce_pickles({self.picklepath: self.data}, add_path=False)
+
+    def wipe_data(self):
+        # So I can save experiment objects without repickling the data
+        self.data = None
+
+
+class Experiment:
+
+    def __init__(self, experiment_code, logger):
+        self.code = experiment_code
+        self.logger = logger
+        self.periods = {} # { rank : PeriodData}
+        self.sorted_ranks = []
+
+    def save_period_data(self, period_data):
+        assert(period_data.rank not in self.periods)
+        self.periods[period_data.rank] = period_data
+
+    def sort_ranks(self):
+        self.sorted_ranks = [ r for r in self.periods.keys()]
+        self.sorted_ranks.sort()
+
+    def load_data(self, loader):
+        for period_data in self.periods.values():
+            period_data.load_data(loader)
+
+    def accumulate_time(self):
+        self.logger.write(f"Accumulating time for experiment {self.code}")
+        self.logger.increase_global_indent()
+        accumulate = 0
+        prev_period_data = None
+        for rank in self.sorted_ranks:
+            period_data = self.periods[rank]
+            #self.logger.write(f"Accumulating time for {period.pkl_name}")
+
+            # Account for gaps in the periods
+            if prev_period_data is not None:
+                gap = self.get_gap(period_data, prev_period_data)
+                accumulate += gap
+
+            # Calculate the new seconds column
+            seconds = period_data.data.index.values
+            seconds += accumulate
+            accumulate = seconds [-1]
+
+            # Save the experiment time as a new column in the dataframe
+            period_data.data['exp_time'] = seconds
+
+            prev_period_data = period_data
+
+        self.logger.decrease_global_indent()
+        self.logger.write("Final accumulations times (start (hrs), end (hrs), name):")
+        self.logger.increase_global_indent()
+        for rank in self.sorted_ranks:
+            period_data = self.periods[rank]
+            #period_data.data.set_index('exp_time', inplace=True)
+
+            # log some stuff
+            new_index = np.round(period_data.data.index.values / 360)/10 #hrs
+            first, last = [new_index[i] for i in (0, -1)]
+            self.logger.write(f"{first}, {last}, {period_data.pkl_name}")
+        self.logger.decrease_global_indent()
+
+    def get_gap(self, curr, prev):
+        # Find the gap between current and previous periods.
+        # returns the expected seconds between the two periods
+        
+        # Build step order
+        limbs = ['rising']*5 + ['falling']*3
+        discharges = [50, 62, 75, 87, 100, 87, 75, 62]
+        step_order = [f"{l}-{d}L" for l, d in zip(limbs, discharges)]
+
+        curr_step = curr.step
+        prev_step = prev.step
+
+        # Find index of steps
+        curr_index = step_order.index(curr_step)
+        prev_index = step_order.index(prev_step)
+
+        # Difference of 0 or 1 is okay.
+        index_diff = curr_index - prev_index 
+
+        # Get period start and end info
+        period_ints = lambda p: [int(t[1:]) for t in p.period.split('-')]
+        curr_start, curr_end = period_ints(curr)
+        prev_start, prev_end = period_ints(prev)
+
+        # Calculate gap in minutes
+        step_duration = 60 # 1 hour in minutes
+        gap = step_duration * index_diff + curr_start - prev_end
+
+        if gap > 0:
+            # Error, missing data
+            self.logger.warning(["Missing data", 
+                f"Missing {gap} minutes of data " +
+                f"between {prev.pkl_name} and {curr.pkl_name}"])
+        else:
+            # Data is okay.
+            self.logger.write(f"No gap from {prev.pkl_name} to {curr.pkl_name}")
+
+        return gap * 60 # return gap in seconds
+
+    def produce_pickles(self, loader):
+        # Tell periods to write pickles 
+        for period_data in self.periods.values():
+            period_data.produce_period_pickle(loader)
+
+    def wipe_data(self):
+        # So I can save experiment objects without repickling the data
+        del self.logger
+        for period_data in self.periods.values():
+            period_data.wipe_data()
+
+class SecondaryPickleProcessor:
+
+    def __init__(self, root_dir):
+        # File locations
+        self.root_dir = root_dir
+        self.pickle_source = f"{self.root_dir}/processed-pickles"
+        self.pickle_destination = f"{self.root_dir}/experiment-pickles"
+        self.log_filepath = "./log-files/Qs_secondary_processor.txt"
+        
+        # Start up logger
+        self.logger = Logger(self.log_filepath, default_verbose=True)
+        self.logger.write(["Begin Secondary Pickle Processor output", asctime()])
+
+        # Start up loader
+        self.loader = DataLoader(self.pickle_source,
+                self.pickle_destination, logger=self.logger)
+
+    def run(self):
+        self.experiments = {}
+
+        indent_function = self.logger.run_indented_function
+
+        indent_function(self.load_pickle_info,
+                before_msg="Getting pickle info", after_msg="Finished!")
+
+        indent_function(self.load_data,
+                before_msg="Loading data", after_msg="Data Loaded!")
+
+        indent_function(self.accumulate_time,
+                before_msg="Accumulating time", after_msg="Time accumulated!")
+
+        indent_function(self.produce_pickles,
+                before_msg="Updating pickles", after_msg="Pickles updated!")
+
+        self.logger.end_output()
+
+    def load_pickle_info(self):
+        # Fill out the experiments dict with {experiment code : Experiment}
+        # Create PeriodData and Experiment objects
+
+        # Find files
+        crawler = Crawler(logger=self.logger)
+        crawler.set_root(self.pickle_source)
+        pkl_filepaths = crawler.get_target_files("Qs_??_*L_t??-t??.pkl", verbose_file_list=False)
+        crawler.end()
+
+        for picklepath in pkl_filepaths:
+            # Create PeriodData objects and hand off to Experiment objects
+            period_data = PeriodData(picklepath)
+
+            exp_code = period_data.exp_code
+            if exp_code not in self.experiments:
+                self.experiments[exp_code] = Experiment(exp_code, self.logger)
+
+            self.experiments[exp_code].save_period_data(period_data)
+
+    def load_data(self):
+        for experiment in self.experiments.values():
+            experiment.sort_ranks()
+            experiment.load_data(self.loader)
+
+    def accumulate_time(self):
+        for experiment in self.experiments.values():
+            experiment.accumulate_time()
+
+    def produce_pickles(self):
+        for experiment in self.experiments.values():
+            experiment.produce_pickles(self.loader)
+            experiment.wipe_data()
+
+        pkl_name = "experiments_metapickle"
+        picklepaths = self.loader.produce_pickles({pkl_name: self.experiments})
 
 
 
 if __name__ == "__main__":
     # Run the script
-    processor = QsPickleProcessor()
-    processor.run()
+    root_dir = "/home/alex/feed-timing/data/extracted-lighttable-results"
+    primary = PrimaryPickleProcessor(root_dir, output_txt=True)
+    primary.run()
+    secondary = SecondaryPickleProcessor(root_dir)
+    secondary.run()
