@@ -18,7 +18,9 @@ from logger import Logger
 from crawler import Crawler
 from helpyr_misc import nsplit
 from helpyr_misc import ensure_dir_exists
-from helpyr_misc import print_entire_df
+from helpyr_misc import exclude_df_cols
+
+from tokens import PeriodData, Experiment
 
 # Primary Pickle Processor takes raw Qs and Qsn pickles and condenses them into 
 # one Qs pickle for each period. ie. Does processing within each period.
@@ -54,7 +56,7 @@ class PrimaryPickleProcessor:
         # File locations
         self.root_dir = root_dir
         self.pickle_source = f"{self.root_dir}/raw-pickles"
-        self.pickle_destination = f"{self.root_dir}/processed-pickles"
+        self.pickle_destination = f"{self.root_dir}/primary-processed-pickles"
         self.txt_destination = f"{self.root_dir}/combined-txts"
         self.log_filepath = "./log-files/Qs_primary_processor.txt"
         self.metapickle_name = "Qs_metapickle"
@@ -108,10 +110,12 @@ class PrimaryPickleProcessor:
         # Make a summary stats dataframe
         self.pd_summary_stats = pd.DataFrame.from_dict(
                 self.summary_stats, orient='index')
+        self.update_summary_stats()
+
+        # Save summary stats pickle/txt files
         indent_function(self.produce_stats_pickle, 
                 before_msg="Producing statistics pickle",
                 after_msg="Statistics pickle produced!")
-
         if self.output_txt:
             indent_function(self.write_stats_txt, 
                     before_msg="Writing statistics txt",
@@ -211,8 +215,7 @@ class PrimaryPickleProcessor:
         accumulating_overlap = None
 
         exclude_cols = ['timestamp', 'missing ratio', 'vel', 'sd vel', 'number vel']
-        target_cols = [col for col in combined.columns.values
-                           if col not in exclude_cols]
+        target_cols = exclude_df_cols(exclude_cols)
 
         # Set up a few lambda functions
         get_num = lambda s: int(s[2:]) # get the file number from the name
@@ -394,7 +397,7 @@ class PrimaryPickleProcessor:
         self.loader.save_txt(data, filepath, is_path=True)
 
 
-    def produce_stats_pickle(self):
+    def update_summary_stats(self):
         summary_stats = self.pd_summary_stats
         pkl_name = self.statspickle_name 
 
@@ -414,6 +417,12 @@ class PrimaryPickleProcessor:
             self.logger.write(["Making new stats pickle. Updating..."])
             # prepickles is a dictionary of {'pickle name':data}
 
+        self.pd_summary_stats = summary_stats
+
+    def produce_stats_pickle(self):
+        summary_stats = self.pd_summary_stats
+        pkl_name = self.statspickle_name 
+
         prepickles = {pkl_name : summary_stats}
         self.loader.produce_pickles(prepickles)
         self.combined_file_counter += 1
@@ -429,158 +438,13 @@ class PrimaryPickleProcessor:
         self.loader.save_txt(data, filepath, kwargs=kwargs, is_path=True)
 
 
-
-class PeriodData:
-    # The PeriodData class is meant as a simple container to store all the 
-    # information associated with each period
-
-    period_ranking = {"rising" : 0, "falling" : 1,
-            "50L" : 00, "62L" : 10, "75L" : 20, "87L" : 30, "100L" : 40,
-            "t00-t10" : 0, "t10-t20" : 1, "t00-t20" : 2,
-            "t20-t30" : 3, "t30-t40" : 4, "t20-t40" : 5,
-            "t40-t50" : 6, "t50-t60" : 7, "t40-t60" : 8, "t00-t60" : 9,
-                      }
-        
-    def __init__(self, picklepath):
-        self.picklepath = picklepath
-        self.pkl_name = nsplit(picklepath, 1)[1].split('.',1)[0]
-        _, self.exp_code, self.step, self.period = self.pkl_name.split('_')
-        
-        # Calculate period ranks
-        limb, flow = self.step.split('-')
-        ranking = PeriodData.period_ranking
-        get_ranking = lambda l, d, p: d + p + 2*l*(40-d)
-        self.rank = get_ranking(*[ranking[k] for k in (limb, flow, self.period)])
-
-        self.data = None
-
-    def load_data(self, loader):
-        self.data = loader.load_pickle(self.picklepath, add_path=False)
-
-    def produce_period_pickle(self, loader):
-        # Overwrites pickle produced in primary processing.
-        # New pickle has accumulated time as an index
-        loader.produce_pickles({self.picklepath: self.data}, add_path=False)
-
-    def wipe_data(self):
-        # So I can save experiment objects without repickling the data
-        self.data = None
-
-
-class Experiment:
-
-    def __init__(self, experiment_code, logger):
-        self.code = experiment_code
-        self.logger = logger
-        self.periods = {} # { rank : PeriodData}
-        self.sorted_ranks = []
-
-    def save_period_data(self, period_data):
-        assert(period_data.rank not in self.periods)
-        self.periods[period_data.rank] = period_data
-
-    def sort_ranks(self):
-        self.sorted_ranks = [ r for r in self.periods.keys()]
-        self.sorted_ranks.sort()
-
-    def load_data(self, loader):
-        for period_data in self.periods.values():
-            period_data.load_data(loader)
-
-    def accumulate_time(self):
-        self.logger.write(f"Accumulating time for experiment {self.code}")
-        self.logger.increase_global_indent()
-        accumulate = 0
-        prev_period_data = None
-        for rank in self.sorted_ranks:
-            period_data = self.periods[rank]
-            #self.logger.write(f"Accumulating time for {period.pkl_name}")
-
-            # Account for gaps in the periods
-            if prev_period_data is not None:
-                gap = self.get_gap(period_data, prev_period_data)
-                accumulate += gap
-
-            # Calculate the new seconds column
-            seconds = period_data.data.index.values
-            seconds += accumulate
-            accumulate = seconds [-1]
-
-            # Save the experiment time as a new column in the dataframe
-            period_data.data['exp_time'] = seconds
-
-            prev_period_data = period_data
-
-        self.logger.decrease_global_indent()
-        self.logger.write("Final accumulations times (start (hrs), end (hrs), name):")
-        self.logger.increase_global_indent()
-        for rank in self.sorted_ranks:
-            period_data = self.periods[rank]
-            #period_data.data.set_index('exp_time', inplace=True)
-
-            # log some stuff
-            new_index = np.round(period_data.data.index.values / 360)/10 #hrs
-            first, last = [new_index[i] for i in (0, -1)]
-            self.logger.write(f"{first}, {last}, {period_data.pkl_name}")
-        self.logger.decrease_global_indent()
-
-    def get_gap(self, curr, prev):
-        # Find the gap between current and previous periods.
-        # returns the expected seconds between the two periods
-        
-        # Build step order
-        limbs = ['rising']*5 + ['falling']*3
-        discharges = [50, 62, 75, 87, 100, 87, 75, 62]
-        step_order = [f"{l}-{d}L" for l, d in zip(limbs, discharges)]
-
-        curr_step = curr.step
-        prev_step = prev.step
-
-        # Find index of steps
-        curr_index = step_order.index(curr_step)
-        prev_index = step_order.index(prev_step)
-
-        # Difference of 0 or 1 is okay.
-        index_diff = curr_index - prev_index 
-
-        # Get period start and end info
-        period_ints = lambda p: [int(t[1:]) for t in p.period.split('-')]
-        curr_start, curr_end = period_ints(curr)
-        prev_start, prev_end = period_ints(prev)
-
-        # Calculate gap in minutes
-        step_duration = 60 # 1 hour in minutes
-        gap = step_duration * index_diff + curr_start - prev_end
-
-        if gap > 0:
-            # Error, missing data
-            self.logger.warning(["Missing data", 
-                f"Missing {gap} minutes of data " +
-                f"between {prev.pkl_name} and {curr.pkl_name}"])
-        else:
-            # Data is okay.
-            self.logger.write(f"No gap from {prev.pkl_name} to {curr.pkl_name}")
-
-        return gap * 60 # return gap in seconds
-
-    def produce_pickles(self, loader):
-        # Tell periods to write pickles 
-        for period_data in self.periods.values():
-            period_data.produce_period_pickle(loader)
-
-    def wipe_data(self):
-        # So I can save experiment objects without repickling the data
-        del self.logger
-        for period_data in self.periods.values():
-            period_data.wipe_data()
-
 class SecondaryPickleProcessor:
 
     def __init__(self, root_dir):
         # File locations
         self.root_dir = root_dir
-        self.pickle_source = f"{self.root_dir}/processed-pickles"
-        self.pickle_destination = f"{self.root_dir}/experiment-pickles"
+        self.pickle_source = f"{self.root_dir}/primary-processed-pickles"
+        self.pickle_destination = f"{self.root_dir}/secondary-processed-pickles"
         self.log_filepath = "./log-files/Qs_secondary_processor.txt"
         
         # Start up logger
@@ -626,7 +490,7 @@ class SecondaryPickleProcessor:
 
             exp_code = period_data.exp_code
             if exp_code not in self.experiments:
-                self.experiments[exp_code] = Experiment(exp_code, self.logger)
+                self.experiments[exp_code] = Experiment(exp_code)
 
             self.experiments[exp_code].save_period_data(period_data)
 
@@ -637,7 +501,7 @@ class SecondaryPickleProcessor:
 
     def accumulate_time(self):
         for experiment in self.experiments.values():
-            experiment.accumulate_time()
+            self.exp_accumulate_time(experiment)
 
     def produce_pickles(self):
         for experiment in self.experiments.values():
@@ -646,6 +510,90 @@ class SecondaryPickleProcessor:
 
         pkl_name = "experiments_metapickle"
         picklepaths = self.loader.produce_pickles({pkl_name: self.experiments})
+
+
+    # Functions that operate "within" an Experiment or PeriodData object
+    # Could be in part of those class defs, but I want them to be more like 
+    # containers (so reduce clutter functions).
+    def exp_accumulate_time(self, experiment):
+        exp_code = experiment.code
+        self.logger.write(f"Accumulating time for experiment {exp_code}")
+        self.logger.increase_global_indent()
+        accumulate = 0
+        prev_period_data = None
+        for rank in experiment.sorted_ranks:
+            period_data = experiment.periods[rank]
+            #self.logger.write(f"Accumulating time for {period_data.pkl_name}")
+
+            # Account for gaps in the periods
+            if prev_period_data is not None:
+                gap = self.get_gap(period_data, prev_period_data)
+                accumulate += gap + 1
+                # +1 is so the last row of prev does not overlap with the first 
+                # row of next (index 0)
+
+            # Calculate the new seconds column
+            seconds = period_data.data.index.values
+            seconds += accumulate
+            accumulate = seconds [-1]
+
+            # Save the experiment time as a new column in the dataframe
+            period_data.data['exp_time'] = seconds
+            period_data.data['exp_time_hrs'] = seconds / 3600
+
+            prev_period_data = period_data
+
+        self.logger.decrease_global_indent()
+        self.logger.write("Final accumulations times (start (hrs), end (hrs), name):")
+        self.logger.increase_global_indent()
+        for rank in experiment.sorted_ranks:
+            period_data = experiment.periods[rank]
+            #period_data.data.set_index('exp_time', inplace=True)
+
+            # log some stuff
+            new_index = np.round(period_data.data.index.values / 360)/10 #hrs
+            first, last = [new_index[i] for i in (0, -1)]
+            self.logger.write(f"{first}, {last}, {period_data.pkl_name}")
+        self.logger.decrease_global_indent()
+
+    def get_gap(self, curr, prev):
+        # Calculate the gap between current and previous periods.
+        # returns the expected seconds between the two periods
+        
+        # Build step order
+        limbs = ['rising']*5 + ['falling']*3
+        discharges = [50, 62, 75, 87, 100, 87, 75, 62]
+        step_order = [f"{l}-{d}L" for l, d in zip(limbs, discharges)]
+
+        curr_step = curr.step
+        prev_step = prev.step
+
+        # Find index of steps
+        curr_index = step_order.index(curr_step)
+        prev_index = step_order.index(prev_step)
+
+        # Difference of 0 or 1 is okay.
+        index_diff = curr_index - prev_index 
+
+        # Get period start and end info
+        period_ints = lambda p: [int(t[1:]) for t in p.period.split('-')]
+        curr_start, curr_end = period_ints(curr)
+        prev_start, prev_end = period_ints(prev)
+
+        # Calculate gap in minutes
+        step_duration = 60 # 1 hour in minutes
+        gap = step_duration * index_diff + curr_start - prev_end
+
+        if gap > 0:
+            # Error, missing data
+            self.logger.warning(["Missing data", 
+                f"Missing {gap} minutes of data " +
+                f"between {prev.pkl_name} and {curr.pkl_name}"])
+        else:
+            # Data is okay.
+            self.logger.write(f"No gap from {prev.pkl_name} to {curr.pkl_name}")
+
+        return gap * 60 # return gap in seconds
 
 
 
