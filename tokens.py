@@ -23,10 +23,12 @@ class PeriodData:
         _, self.exp_code, self.step, self.period = self.pkl_name.split('_')
         
         # Calculate period ranks
-        limb, flow = self.step.split('-')
+        self.limb, self.discharge = self.step.split('-')
+        self.discharge_int = int(self.discharge[:-1])
         ranking = PeriodData.period_ranking
         get_ranking = lambda l, d, p: d + p + 2*l*(40-d)
-        self.rank = get_ranking(*[ranking[k] for k in (limb, flow, self.period)])
+        self.rank = get_ranking(*[ranking[k] for k in
+                                  (self.limb, self.discharge, self.period)])
 
         self.data = None
 

@@ -540,6 +540,10 @@ class SecondaryPickleProcessor:
             # Save the experiment time as a new column in the dataframe
             period_data.data['exp_time'] = seconds
             period_data.data['exp_time_hrs'] = seconds / 3600
+            # Bad programming form here... Easiest place to add a discharge 
+            # column too
+            discharge = period_data.discharge_int
+            period_data.data['discharge'] = discharge * np.ones_like(seconds)
 
             prev_period_data = period_data
 

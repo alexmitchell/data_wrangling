@@ -59,6 +59,7 @@ class QsGrapher:
         self.logger.write(["Making experiment plots..."])
 
         self.experiments = {}
+        self.ignore_steps = ['rising-50L']
 
         indent_function = self.logger.run_indented_function
 
@@ -81,18 +82,19 @@ class QsGrapher:
 
         #fig = plt.figure()
         #ax = plt.axes()
-        fig, axs = plt.subplots(2, 4, sharey=True, figsize=(16,10))
+        fig, axs = plt.subplots(2, 4, sharey=True, sharex=True, figsize=(16,10))
 
-        figure_name = "bedload_all_roll_av.png"
+        figure_name = "bedload_all_hydrograph_20min.png"
         plot_kwargs = {
                 'x'    : 'exp_time_hrs',
                 'y'    : 'Bedload all',
                 'kind' : 'scatter',
                 'logy' : True,
+                'xlim' : (0.5, 8.5),
                 'ylim' : (0.001, 5000),
                 }
         rolling_kwargs = {
-                'window'      : 60, # seconds
+                'window'      : 60*20, # seconds
                 'min_periods' : 40,
                 #'on'          : plot_kwargs['x'],
                 }
@@ -104,34 +106,73 @@ class QsGrapher:
         exp_codes.sort()
         for exp_code, ax in zip(exp_codes, axs.flatten()):
             plot_kwargs['ax'] = ax
+            twax = ax.twinx()
             experiment = self.experiments[exp_code]
 
             self.rolling_av = None
+            self.hydrograph = None
 
             self.logger.write(f"Plotting experiment {exp_code}")
             experiment.apply_period_function(self._plot_dataframe, kwargs)
-            experiment.apply_period_function(self._plot_rolling, kwargs)
+            experiment.apply_period_function(self._plot_hydrograph, kwargs)
 
+            self.hydrograph.sort_index(inplace=True)
+            self.hydrograph.plot(ax=twax, style='g', ylim=(0,400))
+
+            experiment.apply_period_function(self._plot_rolling, kwargs)
             series_plot_kwargs = {k : plot_kwargs[k] for k in plot_kwargs
                                         if k not in ['x', 'y', 'kind']}
-            series_plot_kwargs['xlim'] = ax.get_xlim()
+            #series_plot_kwargs['xlim'] = ax.get_xlim()
             series_plot_kwargs['style'] = 'r'
             self.rolling_av.plot(**series_plot_kwargs)
 
             ax.set_title(f"Experiment {experiment.code}")
+            #twax.set_ylabel('Discharge (L/s)')
 
         yrange = plot_kwargs['ylim']
         plt.suptitle(f"Total bedload output with logy scale {yrange} ({asctime()})")
+
         filepath = ospath_join(self.figure_destination, figure_name)
         self.logger.write(f"Saving figure to {filepath}")
         plt.savefig(filepath, orientation='landscape')
         plt.show()
 
+    def _plot_hydrograph(self, period_data, kwargs={}):
+        if not self._check_ignore_period(period_data):
+            plot_kwargs = kwargs['plot_kwargs']
+            x = plot_kwargs['x']
+            y = 'discharge'
+
+            data = period_data.data
+            x0 = data.loc[:,x].iloc[0]
+            x1 = data.loc[:,x].iloc[-1]
+            y0 = data.loc[:,y].iloc[0]
+            y1 = data.loc[:,y].iloc[-1]
+
+            discharge = pd.Series([y0,y1], index=[x0,x1])
+            if self.hydrograph is None:
+                self.hydrograph = discharge
+            else:
+                self.hydrograph = self.hydrograph.append(discharge, verify_integrity=True)
+
     def _plot_dataframe(self, period_data, kwargs={}):
-        all_data = period_data.data
-        all_data.plot(**kwargs['plot_kwargs'])
+        if not self._check_ignore_period(period_data):
+            all_data = period_data.data
+            all_data.plot(**kwargs['plot_kwargs'])
+
+            # Too slow...
+            #plot_kwargs = kwargs['plot_kwargs']
+            #discharge_kwargs = {k : plot_kwargs[k] for k in plot_kwargs}
+            #discharge_kwargs['y'] = 'discharge'
+            #discharge_kwargs['kind'] = 'line'
+            #discharge_kwargs['style'] = 'g'
+            #discharge_kwargs['ax'] = plot_kwargs['ax'].twinx()
+            #all_data.plot(**discharge_kwargs)
 
     def _plot_rolling(self, period_data, kwargs={}):
+        if self._check_ignore_period(period_data):
+            return
+
         all_data = period_data.data
 
         x = all_data.loc[:, kwargs['plot_kwargs']['x']]
@@ -152,6 +193,9 @@ class QsGrapher:
         #average.plot(**plot_kwargs)
         #plot_kwargs['kind'] = kind
 
+    def _check_ignore_period(self, period_data):
+        # Return True if period should be ignored
+        return period_data.step in self.ignore_steps
 
 
 if __name__ == "__main__":
