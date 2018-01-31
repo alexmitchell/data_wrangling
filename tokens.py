@@ -64,6 +64,7 @@ class Experiment:
         self.code = experiment_code
         self.periods = {} # { rank : PeriodData}
         self.sorted_ranks = []
+        self.accumulated_data = None
 
     def save_period_data(self, period_data):
         # Store a new PeriodData object in the self.periods dict
@@ -82,6 +83,31 @@ class Experiment:
         # individual picklepaths to load.
         for period_data in self.periods.values():
             period_data.load_data(loader)
+
+    def accumulate_data(self, kwargs):
+        # Accumulate the data for all the periods in this experiment.  
+        # Simplifies subsequent functions (like rolling averages).
+        self.apply_period_function(self._accumulate_data, kwargs)
+        
+        # Must sort data or many things will not make sense
+        self.accumulated_data.sort_values(by='exp_time_hrs', inplace=True)
+
+    def _accumulate_data(self, period_data, kwargs):
+        accumulate_kwargs = kwargs['accumulate_kwargs']
+        check_ignore = accumulate_kwargs['check_ignored_fu']
+        if check_ignore(period_data):
+            return
+
+        if 'cols_to_keep' in kwargs:
+            columns_to_keep = accumulate_kwargs['cols_to_keep']
+            data = period_data.data.loc[:, columns_to_keep]
+        else:
+            data = period_data.data
+
+        if self.accumulated_data is None:
+            self.accumulated_data = data
+        else:
+            self.accumulated_data = self.accumulated_data.append(data)
 
     def produce_pickles(self, loader):
         # Tell periods to (over)write pickles for the data
