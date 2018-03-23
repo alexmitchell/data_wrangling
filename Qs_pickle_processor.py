@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 
-# This script will load Qs# chunk pickles according to the metapickle and 
+# This script will load Qs# chunk pickles according to the omnipickle and 
 # combine them into complete Qs pickles
 #
-# Qs_metapickle = {period_path: Qs_pickle_paths}
+# Qs_omnipickle = {period_path: Qs_pickle_paths}
 #
 # Qs# pickles are panda dataframes directly translated from the raw txt files
 
@@ -20,7 +20,7 @@ from helpyr_misc import nsplit
 from helpyr_misc import ensure_dir_exists
 from helpyr_misc import exclude_df_cols
 
-from tokens import PeriodData, Experiment
+from omnipickle_manager import OmnipickleManager
 
 # Primary Pickle Processor takes raw Qs and Qsn pickles and condenses them into 
 # one Qs pickle for each period. ie. Does processing within each period.
@@ -456,7 +456,8 @@ class SecondaryPickleProcessor:
                 self.pickle_destination, logger=self.logger)
 
     def run(self):
-        self.experiments = {}
+        self.omnimanager = OmnipickleManager()
+        #self.experiments = {}
 
         indent_function = self.logger.run_indented_function
 
@@ -484,32 +485,16 @@ class SecondaryPickleProcessor:
         pkl_filepaths = crawler.get_target_files("Qs_??_*L_t??-t??.pkl", verbose_file_list=False)
         crawler.end()
 
-        for picklepath in pkl_filepaths:
-            # Create PeriodData objects and hand off to Experiment objects
-            period_data = PeriodData(picklepath)
-
-            exp_code = period_data.exp_code
-            if exp_code not in self.experiments:
-                self.experiments[exp_code] = Experiment(exp_code)
-
-            self.experiments[exp_code].save_period_data(period_data)
+        self.omnimanager.Qs_load_pickle_info(pkl_filepaths)
 
     def load_data(self):
-        for experiment in self.experiments.values():
-            experiment.sort_ranks()
-            experiment.load_data(self.loader)
+        self.omnimanager.Qs_load_data(self.loader)
 
     def accumulate_time(self):
-        for experiment in self.experiments.values():
-            self.exp_accumulate_time(experiment)
+        self.omnimanager.Qs_accumulate_time(self.exp_accumulate_time)
 
     def produce_pickles(self):
-        for experiment in self.experiments.values():
-            experiment.produce_pickles(self.loader)
-            experiment.wipe_data()
-
-        pkl_name = "experiments_metapickle"
-        picklepaths = self.loader.produce_pickles({pkl_name: self.experiments})
+        self.omnimanager.Qs_produce_pickles(self.loader)
 
 
     # Functions that operate "within" an Experiment or PeriodData object
@@ -523,7 +508,7 @@ class SecondaryPickleProcessor:
         prev_period_data = None
         for rank in experiment.sorted_ranks:
             period_data = experiment.periods[rank]
-            #self.logger.write(f"Accumulating time for {period_data.pkl_name}")
+            #self.logger.write(f"Accumulating time for {period_data.Qs_pkl_name}")
 
             # Account for gaps in the periods
             if prev_period_data is not None:
@@ -533,17 +518,17 @@ class SecondaryPickleProcessor:
                 # row of next (index 0)
 
             # Calculate the new seconds column
-            seconds = period_data.data.index.values
+            seconds = period_data.Qs_data.index.values
             seconds += accumulate
             accumulate = seconds [-1]
 
             # Save the experiment time as a new column in the dataframe
-            period_data.data['exp_time'] = seconds
-            period_data.data['exp_time_hrs'] = seconds / 3600
+            period_data.Qs_data['exp_time'] = seconds
+            period_data.Qs_data['exp_time_hrs'] = seconds / 3600
             # Bad programming form here... Easiest place to add a discharge 
             # column too
             discharge = period_data.discharge_int
-            period_data.data['discharge'] = discharge * np.ones_like(seconds)
+            period_data.Qs_data['discharge'] = discharge * np.ones_like(seconds)
 
             prev_period_data = period_data
 
@@ -552,12 +537,12 @@ class SecondaryPickleProcessor:
         self.logger.increase_global_indent()
         for rank in experiment.sorted_ranks:
             period_data = experiment.periods[rank]
-            #period_data.data.set_index('exp_time', inplace=True)
+            #period_data.Qs_data.set_index('exp_time', inplace=True)
 
             # log some stuff
-            new_index = np.round(period_data.data.index.values / 360)/10 #hrs
+            new_index = np.round(period_data.Qs_data.index.values / 360)/10 #hrs
             first, last = [new_index[i] for i in (0, -1)]
-            self.logger.write(f"{first}, {last}, {period_data.pkl_name}")
+            self.logger.write(f"{first}, {last}, {period_data.Qs_pkl_name}")
         self.logger.decrease_global_indent()
 
     def get_gap(self, curr, prev):
@@ -592,10 +577,11 @@ class SecondaryPickleProcessor:
             # Error, missing data
             self.logger.warning(["Missing data", 
                 f"Missing {gap} minutes of data " +
-                f"between {prev.pkl_name} and {curr.pkl_name}"])
+                f"between {prev.Qs_pkl_name} and {curr.Qs_pkl_name}"])
         else:
             # Data is okay.
-            self.logger.write(f"No gap from {prev.pkl_name} to {curr.pkl_name}")
+            self.logger.write(
+                    f"No gap from {prev.Qs_pkl_name} to {curr.Qs_pkl_name}")
 
         return gap * 60 # return gap in seconds
 
