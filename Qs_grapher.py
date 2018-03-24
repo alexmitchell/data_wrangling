@@ -46,9 +46,6 @@ class QsGrapher:
         self.pickle_source = f"{self.root_dir}/secondary-processed-pickles"
         self.log_filepath = "./log-files/Qs_grapher.txt"
         self.figure_destination = f"{self.root_dir}/prelim-figures"
-        self.omnimanager = OmnipickleManager()
-        self.exp_omnipickle = "omnipickle"
-        #self.experiments = {}
         
         # Start up logger
         self.logger = Logger(self.log_filepath, default_verbose=True)
@@ -59,16 +56,16 @@ class QsGrapher:
 
         ensure_dir_exists(self.figure_destination)
 
+        # Make the omnimanager
+        self.omnimanager = OmnipickleManager(self.logger)
+
     def load_data(self):
-        self.omnimanager.reload_omnipickle(self.exp_omnipickle, self.loader)
-        #self.experiments = self.loader.load_pickle(self.exp_omnipickle)
+        self.omnimanager.restore()
         accumulate_kwargs = {
                 'check_ignored_fu' : self._check_ignore_period,
                 }
-        self.omnimanager.reload_Qs(self.loader, accumulate_kwargs)
-        #for experiment in self.experiments.values():
-        #    experiment.load_data(self.loader)
-        #    experiment.accumulate_data({'accumulate_kwargs':accumulate_kwargs})
+        self.omnimanager.reload_Qs_data()
+        self.omnimanager.accumulate_Qs_data(accumulate_kwargs)
 
     def roll_data(self, data, kwargs={}):
         # Make rolling averages on the provided data.
@@ -92,8 +89,6 @@ class QsGrapher:
     def make_experiment_plots(self):
         self.logger.write(["Making experiment plots..."])
 
-        #self.experiments = {}
-        self.omnimanager.wipe_data()
         self.ignore_steps = ['rising-50L']
 
         indent_function = self.logger.run_indented_function
@@ -199,8 +194,6 @@ class QsGrapher:
     def make_hysteresis_plots(self):
         self.logger.write(["Making hysteresis plots..."])
 
-        #self.experiments = {}
-        self.omnimanager.wipe_data()
         self.ignore_steps = ['rising-50L']
 
         indent_function = self.logger.run_indented_function
@@ -307,8 +300,6 @@ class QsGrapher:
     def make_cumulative_plots(self):
         self.logger.write(["Making cumulative plots..."])
 
-        #self.experiments = {}
-        self.omnimanager.wipe_data()
         self.ignore_steps = ['rising-50L']
 
         indent_function = self.logger.run_indented_function
@@ -395,8 +386,6 @@ class QsGrapher:
         # (grams/sec). 
         self.logger.write(["Making total transport distribution plots..."])
 
-        #self.experiments = {}
-        self.omnimanager.wipe_data()
         self.ignore_steps = ['rising-50L']
 
         indent_function = self.logger.run_indented_function

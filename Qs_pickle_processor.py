@@ -456,7 +456,7 @@ class SecondaryPickleProcessor:
                 self.pickle_destination, logger=self.logger)
 
     def run(self):
-        self.omnimanager = OmnipickleManager()
+        self.omnimanager = OmnipickleManager(self.logger)
         #self.experiments = {}
 
         indent_function = self.logger.run_indented_function
@@ -470,7 +470,7 @@ class SecondaryPickleProcessor:
         indent_function(self.accumulate_time,
                 before_msg="Accumulating time", after_msg="Time accumulated!")
 
-        indent_function(self.produce_pickles,
+        indent_function(self.save_pickles,
                 before_msg="Updating pickles", after_msg="Pickles updated!")
 
         self.logger.end_output()
@@ -485,22 +485,24 @@ class SecondaryPickleProcessor:
         pkl_filepaths = crawler.get_target_files("Qs_??_*L_t??-t??.pkl", verbose_file_list=False)
         crawler.end()
 
-        self.omnimanager.Qs_load_pickle_info(pkl_filepaths)
+        self.omnimanager.Qs_build_experiment_tree(pkl_filepaths)
 
     def load_data(self):
-        self.omnimanager.Qs_load_data(self.loader)
+        self.omnimanager.reload_Qs_data()
 
     def accumulate_time(self):
         self.omnimanager.Qs_accumulate_time(self.exp_accumulate_time)
 
-    def produce_pickles(self):
-        self.omnimanager.Qs_produce_pickles(self.loader)
+    def save_pickles(self):
+        self.omnimanager.Qs_finish_secondary_pickles(self.pickle_destination)
 
 
     # Functions that operate "within" an Experiment or PeriodData object
     # Could be in part of those class defs, but I want them to be more like 
     # containers (so reduce clutter functions).
     def exp_accumulate_time(self, experiment):
+        # This function makes a sequential timestap for a period's Qs data.
+        # Saves it as a new column in the data
         exp_code = experiment.code
         self.logger.write(f"Accumulating time for experiment {exp_code}")
         self.logger.increase_global_indent()

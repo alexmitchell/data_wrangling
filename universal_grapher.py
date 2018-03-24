@@ -14,6 +14,7 @@ from logger import Logger
 from data_loading import DataLoader
 
 from omnipickle_manager import OmnipickleManager
+import global_settings as settings
 
 # To do:
 # - Remove outliers
@@ -37,6 +38,15 @@ Qs_column_names = [
         'D10', 'D16', 'D25', 'D50', 'D75', 'D84', 'D90', 'D95', 'Dmax'
         ]
 
+gsd_column_names = [
+        # Stats
+        'Sigmag', 'Dg', 'La', 'D90', 'D50', 'D10', 'Fsx',
+        # Grain Size Fractions (counts)
+        '0.5', '0.71', '1', '1.4', '2', '2.8', '4',
+        '5.6', '8', '11.3', '16', '22.6', '32',
+        # Data name (ex: 3B-f75L-t60-8m )
+        'data_name',
+        ]
 
 class UniversalGrapher:
     # Based on the Qs_grapher, but extended to graph other data as well.
@@ -44,44 +54,25 @@ class UniversalGrapher:
     # General functions
     def __init__(self, root_dir):
         # File locations
-        self.log_filepath = "./log-files/universal_grapher.txt"
+        self.log_filepath = f"{settings.log_dir}/universal_grapher.txt"
 
-        self.root_dir = "/home/alex/feed-timing/data/"
-        self.figure_destination = f"{self.root_dir}/prelim-figures"
-
-        # source dirs
-        self.lighttable_dir = f"{self.root_dir}/extracted-lighttable-results"
-        self.Qs_pickles_source = f"{self.lighttable_dir}/secondary-processed-pickles"
-
-        self.cart_dir = f"{self.root_dir}/cart"
-        self.cart_pickles_source = f"{self.cart_dir}/cart-pickles"
-
-        self.manual_dir = f"{self.root_dir}/manual-data"
-        self.manual_pickles_source = f"{self.root_dir}/manual-pickles"
-
-        # omnimanager
-        self.omnimanager = OmnipickleManager()
-        self.omnipickle_path = f"{self.root_dir}/experiments_omnipickle.pkl"
-        self.omnimanager.reload_omnipickle(self.exp_omnipickle, self.loader)
-        
         # Start up logger
         self.logger = Logger(self.log_filepath, default_verbose=True)
-        self.logger.begin_output("Qs Grapher")
+        self.logger.begin_output("Universal Grapher")
 
         # Start up loader
-        self.loader = DataLoader(self.Qs_pickle_source, logger=self.logger)
+        #self.loader = DataLoader(self.Qs_pickle_source, logger=self.logger)
 
-        ensure_dir_exists(self.figure_destination)
+        # omnimanager
+        self.omnimanager = OmnipickleManager(self.logger)
+        self.omnimanager.restore()
 
-    def load_data(self):
-        #self.experiments = self.loader.load_pickle(self.exp_omnipickle)
-        accumulate_kwargs = {
+        ensure_dir_exists(settings.figure_destination)
+
+        self.accumulate_kwargs = {
                 'check_ignored_fu' : self._check_ignore_period,
                 }
-        self.omnimanager.reload_Qs(self.loader, accumulate_kwargs)
-        #for experiment in self.experiments.values():
-        #    experiment.load_data(self.loader)
-        #    experiment.accumulate_data({'accumulate_kwargs':accumulate_kwargs})
+
 
     def roll_data(self, data, kwargs={}):
         # Make rolling averages on the provided data.
@@ -101,7 +92,116 @@ class UniversalGrapher:
             self.rolling_av = self.rolling_av.append(average, verify_integrity=True)
 
 
-    # Functions to plot overall experiment info
+    # Functions to plot only gsd data
+    def make_gsd_time_plots(self):
+        self.logger.write(["Making gsd time plots..."])
+
+        self.ignore_steps = ['rising-50L']
+
+        indent_function = self.logger.run_indented_function
+
+        indent_function(self.omnimanager.load_gsd_data,
+                before_msg="Loading data", after_msg="Data Loaded!")
+
+        indent_function(self.plot_gsd_time,
+                before_msg="Plotting gsd vs time",
+                after_msg="Finished Plotting!")
+
+        self.logger.end_output()
+
+    def plot_gsd_time(self):
+        plot_kwargs = {
+                'x'    : 'exp_time_hrs',
+                'y'    : y_column,
+                'kind' : 'scatter',
+                'logy' : True,
+                'xlim' : (0.5, 8.5),
+                #'ylim' : (0.001, 5000), # for use with logy
+                #'ylim' : (0.001, 500),
+                'ylim' : (0, 40),
+                }
+        rolling_kwargs = {
+                'window'      : roll_window*60, # seconds
+                'min_periods' : 20,
+                'center'      : True,
+                #'on'          : plot_kwargs['x'],
+                }
+        kwargs = {'plot_kwargs'    : plot_kwargs,
+                  'rolling_kwargs' : rolling_kwargs,
+                  }
+
+        columns_to_plot = [y_column]
+
+        filename_y_col = y_column.replace(' ', '-').lower()
+        logy_str = '_logy' if 'logy' in plot_kwargs and plot_kwargs['logy'] else ''
+        figure_name = f"{filename_y_col}_roll-{roll_window}min{logy_str}.png"
+
+        fig, axs = plt.subplots(2, 4, sharey=True, sharex=True, figsize=(16,10))
+        twin_axes = []
+
+        # Make one plot per experiment
+        exp_codes = list(self.omnimanager.experiments.keys())
+        exp_codes.sort()
+        for exp_code, ax in zip(exp_codes, axs.flatten()):
+            self.logger.write(f"Plotting experiment {exp_code}")
+
+            plot_kwargs['ax'] = ax
+            twax = ax.twinx()
+            twin_axes.append(twax)
+            experiment = self.omnimanager.experiments[exp_code]
+            accumulated_data = experiment.accumulated_data
+
+            self.rolling_av = None
+            self.hydrograph = None
+
+            # Plot the data points
+            accumulated_data.plot(**plot_kwargs)
+
+            # Generate and plot the hydrograph
+            experiment.apply_period_function(self._generate_hydrograph, kwargs)
+            self.hydrograph.sort_index(inplace=True)
+            self.hydrograph.plot(ax=twax, style='g', ylim=(50,800))
+            twax.tick_params('y', labelright='off')
+            #if exp_code in ['2B', '5A']:
+            #    twax.set_ylabel('Discharge (L/s)')
+
+            # Generate and plot rolled averages
+            self.roll_data(accumulated_data, kwargs)
+            series_plot_kwargs = {k : plot_kwargs[k] for k in plot_kwargs
+                                        if k not in ['x', 'y', 'kind']}
+            #series_plot_kwargs['xlim'] = ax.get_xlim()
+            series_plot_kwargs['style'] = 'r'
+            self.rolling_av.plot(**series_plot_kwargs)
+
+            ax.set_title(f"Experiment {experiment.code} {experiment.name}")
+
+        # Can't figure out how to share the twinned y axes
+        #for ax_row in 0,1:
+        #    ax = axs[ax_row, 3]
+        #twin_axes[0].get_shared_y_axis().join(*twin_axes)
+        #twin_axes[0].set_ylabel('Discharge (L/s)')
+        #yrange = plot_kwargs['ylim']
+        plt.suptitle(f"{y_column} output ({roll_window} min" +
+                f"roll window, {asctime()})")
+
+        # Save the figure
+        filepath = ospath_join(self.figure_destination, figure_name)
+        self.logger.write(f"Saving figure to {filepath}")
+        plt.savefig(filepath, orientation='landscape')
+        plt.show()
+
+    
+    # Functions to plot only Qs data
+    def load_Qs_data(self):
+        #self.experiments = self.loader.load_pickle(self.exp_omnipickle)
+        accumulate_kwargs = {
+                'check_ignored_fu' : self._check_ignore_period,
+                }
+        self.omnimanager.reload_Qs(self.loader, accumulate_kwargs)
+        #for experiment in self.experiments.values():
+        #    experiment.load_Qs_data(self.loader)
+        #    experiment.accumulate_data({'accumulate_kwargs':accumulate_kwargs})
+
     def make_experiment_plots(self):
         self.logger.write(["Making experiment plots..."])
 
@@ -111,7 +211,7 @@ class UniversalGrapher:
 
         indent_function = self.logger.run_indented_function
 
-        indent_function(self.load_data,
+        indent_function(self.load_Qs_data,
                 before_msg="Loading data", after_msg="Data Loaded!")
 
         indent_function(self.plot_full_exp,
@@ -207,8 +307,6 @@ class UniversalGrapher:
         plt.savefig(filepath, orientation='landscape')
         plt.show()
 
-
-    # Functions to plot hysteresis
     def make_hysteresis_plots(self):
         self.logger.write(["Making hysteresis plots..."])
 
@@ -218,7 +316,7 @@ class UniversalGrapher:
 
         indent_function = self.logger.run_indented_function
 
-        indent_function(self.load_data,
+        indent_function(self.load_Qs_data,
                 before_msg="Loading data", after_msg="Data Loaded!")
 
         indent_function(self.plot_hysteresis,
@@ -315,8 +413,6 @@ class UniversalGrapher:
         plt.savefig(filepath, orientation='landscape')
         plt.show()
 
-
-    # Functions to plot cumulative
     def make_cumulative_plots(self):
         self.logger.write(["Making cumulative plots..."])
 
@@ -326,7 +422,7 @@ class UniversalGrapher:
 
         indent_function = self.logger.run_indented_function
 
-        indent_function(self.load_data,
+        indent_function(self.load_Qs_data,
                 before_msg="Loading data", after_msg="Data Loaded!")
 
         indent_function(self.plot_cumulative,
@@ -401,8 +497,6 @@ class UniversalGrapher:
         plt.savefig(filepath, orientation='landscape')
         plt.show()
 
-
-    # Functions to transport rate distribution
     def make_transport_histogram_plots(self):
         # To help identify outliers. Plot a histogram of the raw transport rate 
         # (grams/sec). 
@@ -414,7 +508,7 @@ class UniversalGrapher:
 
         indent_function = self.logger.run_indented_function
 
-        indent_function(self.load_data,
+        indent_function(self.load_Qs_data,
                 before_msg="Loading data", after_msg="Data Loaded!")
 
         indent_function(self.plot_transport_histograms,
@@ -519,7 +613,8 @@ class UniversalGrapher:
 if __name__ == "__main__":
     # Run the script
     grapher = UniversalGrapher()
-    grapher.make_experiment_plots()
+    grapher.make_gsd_time_plots()
+    #grapher.make_experiment_plots()
     #grapher.make_hysteresis_plots()
     #grapher.make_cumulative_plots()
     #grapher.make_transport_histogram_plots()

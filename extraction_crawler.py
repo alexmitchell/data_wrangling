@@ -12,9 +12,13 @@ from xlrd.biffh import XLRDError
 
 
 
-# ISSUE TO ADDRESS: Some Qs.txt and Qs1.txt files appear to be nearly identical 
-# copies. The first row is usually different and sometimes a random row where a 
-# grain count is 1 off. Preference is given to Qs1.txt?
+# ISSUE TO ADDRESS:
+# ExtractionCrawler appears to be out of date. Might not function without 
+# serious tweaking.
+# 
+# Some Qs.txt and Qs1.txt files appear to be nearly identical copies. The first 
+# row is usually different and sometimes a random row where a grain count is 1 
+# off. Preference is given to Qs1.txt?
 #
 # 4A/rising-87L/results-t40-t60 -> Multiple Qs files are wrong.  Full 
 # of zero values. Maybe linked to minimum particles needed for 
