@@ -77,11 +77,23 @@ class GSDProcessor:
             # Pull apart provided filepath to GrainSize.txt to get run info 
             gsd_dir, gsd_name = nsplit(gsd_filepath, 1)
             gsd_name = gsd_name.split('.', 1)[0]
-            data_name, sta_str, _ = gsd_name.split('_')
-            exp_code, step, period, scan_length = data_name.split('-')
+            scan_name, sta_str, _ = gsd_name.split('_')
+            exp_code, step, period, scan_length = scan_name.split('-')
+
+            # Calculate experiment time based on step and period
+            is_falling = step[0] == 'f'
+            discharge = int(step[1:-1])
+            period_time = int(period[1:])
+
+            discharge_order = [50, 62, 75, 87, 100]
+            discharge_index = discharge_order.index(discharge)
+            n_discharges = len(discharge_order)
+
+            calc_time = lambda l, d, t: t + 60*(d + 2*l*(n_discharges-1-d))
+            exp_time = calc_time(is_falling, discharge_index, period_time)
 
             # Generate name to grain size fraction file
-            gsf_name = f"{data_name}_{sta_str}_GrainSizeFractions.txt"
+            gsf_name = f"{scan_name}_{sta_str}_GrainSizeFractions.txt"
             gsf_filepath = os.path.join(gsd_dir, gsf_name)
 
             # Both data files are read exactly the same, do in a loop
@@ -94,21 +106,23 @@ class GSDProcessor:
                 run_data = pd.concat([run_data, data], axis=1)
 
             # Add columns that will be later used for a multiindex
-            var_names = ['exp_code', 'step', 'period', 'sta_str', 'scan_length']
-            var_vals = [exp_code, step, period, sta_str, scan_length]
-            for var_name, var_val in zip(var_names + ['data_name'],
-                                         var_vals + [data_name]):
+            index_names = ['exp_code', 'step', 'period', 'sta_str', 'scan_length']
+            index_vals = [exp_code, step, period, sta_str, scan_length]
+            var_names = index_names + ['scan_name', 'exp_time']
+            var_vals = index_vals + [scan_name, exp_time]
+            for var_name, var_val in zip(var_names, var_vals):
                 run_data[var_name] = var_val
 
             run_data_frames.append(run_data)
 
         # Add data to combined data
         self.all_data = pd.concat(run_data_frames, ignore_index=True)
-        self.all_data.set_index(var_names, inplace=True)
+        self.all_data.set_index(index_names, inplace=True)
 
     def update_omnipickle(self):
         # Add gsd data to omnipickle
-        self.omnimanager.add_gsd_data(settings.cart_data_dir, self.all_data)
+        ensure_dir_exists(settings.cart_pickles_dir)
+        self.omnimanager.add_gsd_data(settings.cart_pickles_dir, self.all_data)
 
 
 if __name__ == "__main__":

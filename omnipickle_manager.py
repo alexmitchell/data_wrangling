@@ -54,6 +54,7 @@ class OmnipickleManager:
         # actual data.
         self.experiments = self.omniloader.load_pickle(self.omnipickle_path,
                                               add_path = False)
+
     def update_tree_definitions(self):
         # if you change the tokens.py file, you must recreate the tree for the 
         # changes to take effect
@@ -121,6 +122,13 @@ class OmnipickleManager:
         for experiment in self.experiments.values():
             experiment.accumulate_Qs_data(
                     {'accumulate_Qs_kwargs':accumulate_kwargs})
+
+    def apply_to_periods(self, fu, kwargs={}):
+        # Pass a function on to the period data.
+        # period data will call the function and provide itself as an argument 
+        # then non-expanded kwargs.
+        for experiment in self.experiments.values():
+            experiment.apply_period_function(fu, kwargs)
 
 
     # Used by gsd_processor

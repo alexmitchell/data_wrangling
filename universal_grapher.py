@@ -44,15 +44,16 @@ gsd_column_names = [
         # Grain Size Fractions (counts)
         '0.5', '0.71', '1', '1.4', '2', '2.8', '4',
         '5.6', '8', '11.3', '16', '22.6', '32',
-        # Data name (ex: 3B-f75L-t60-8m )
-        'data_name',
+        # Scan name (ex: 3B-f75L-t60-8m )
+        'scan_name',
         ]
+
 
 class UniversalGrapher:
     # Based on the Qs_grapher, but extended to graph other data as well.
 
     # General functions
-    def __init__(self, root_dir):
+    def __init__(self):
         # File locations
         self.log_filepath = f"{settings.log_dir}/universal_grapher.txt"
 
@@ -67,12 +68,18 @@ class UniversalGrapher:
         self.omnimanager = OmnipickleManager(self.logger)
         self.omnimanager.restore()
 
-        ensure_dir_exists(settings.figure_destination)
+        self.figure_destination = settings.figure_destination
+        ensure_dir_exists(self.figure_destination)
 
-        self.accumulate_kwargs = {
+        self.ignore_steps = []
+
+    # General use functions
+    def load_Qs_data(self):
+        #self.experiments = self.loader.load_pickle(self.exp_omnipickle)
+        accumulate_kwargs = {
                 'check_ignored_fu' : self._check_ignore_period,
                 }
-
+        self.omnimanager.reload_Qs(self.loader, accumulate_kwargs)
 
     def roll_data(self, data, kwargs={}):
         # Make rolling averages on the provided data.
@@ -91,117 +98,321 @@ class UniversalGrapher:
         else:
             self.rolling_av = self.rolling_av.append(average, verify_integrity=True)
 
+    def create_experiment_subplots(self):
+        # So that I can create a standardized grid for the 8 experiments
+        fig, axs = plt.subplots(4, 2, sharey=True, sharex=True, figsize=(16,10))
+        return fig, axs
+
+    def generate_rb_colors(self, n_colors):
+        # Generate color red to blue color sequence
+        n_colors = 8
+        half_n = n_colors//2
+        colors = np.ones((n_colors, 3))
+        s = np.linspace(0,1,num=half_n)
+        colors[-half_n : , 0] = 1 - s # r
+        colors[     :    , 1] = 0     # g
+        colors[ : half_n , 2] = s     # b
+        return colors
+
+    def generate_rb_color_fu(self, max_n):
+        half_n = max_n // 2
+        def rgb_fu(n):
+            # red high, blue ramps up then blue high, red ramps down
+            r = 1 if n < half_n else (max_n - n) / half_n
+            g = 0
+            b = 1 if n > half_n else n / half_n
+            return (r, g, b)
+
+        return rgb_fu
+
 
     # Functions to plot only gsd data
-    def make_gsd_time_plots(self):
-        self.logger.write(["Making gsd time plots..."])
-
-        self.ignore_steps = ['rising-50L']
+    def make_mean_gsd_time_plots(self, y_name='D50'):
+        self.logger.write([f"Making station-averaged gsd time plots..."])
 
         indent_function = self.logger.run_indented_function
 
-        indent_function(self.omnimanager.load_gsd_data,
+        indent_function(self.omnimanager.reload_gsd_data,
                 before_msg="Loading data", after_msg="Data Loaded!")
 
-        indent_function(self.plot_gsd_time,
-                before_msg="Plotting gsd vs time",
+        indent_function(self.plot_mean_gsd_time,
+                kwargs={'y_name':y_name},
+                before_msg=f"Plotting station mean gsd vs time",
                 after_msg="Finished Plotting!")
 
         self.logger.end_output()
 
-    def plot_gsd_time(self):
+    def plot_mean_gsd_time(self, y_name='D50'):
+        x_name = 'exp_time'
         plot_kwargs = {
-                'x'    : 'exp_time_hrs',
-                'y'    : y_column,
-                'kind' : 'scatter',
-                'logy' : True,
-                'xlim' : (0.5, 8.5),
-                #'ylim' : (0.001, 5000), # for use with logy
-                #'ylim' : (0.001, 500),
-                'ylim' : (0, 40),
+                'x'      : x_name,
+                'y'      : y_name,
+                #'kind'   : 'scatter',
+                'legend' : False,
                 }
-        rolling_kwargs = {
-                'window'      : roll_window*60, # seconds
-                'min_periods' : 20,
-                'center'      : True,
-                #'on'          : plot_kwargs['x'],
+        gsd_gather_kwargs = {
+                'columns'   : y_name if isinstance(y_name, list) else [y_name],
+                'new_index' : ['exp_time', 'sta_str'],
                 }
         kwargs = {'plot_kwargs'    : plot_kwargs,
-                  'rolling_kwargs' : rolling_kwargs,
                   }
 
-        columns_to_plot = [y_column]
+        # Make a color generating function
+        get_color = lambda n: (0, 0, 0)
 
-        filename_y_col = y_column.replace(' ', '-').lower()
-        logy_str = '_logy' if 'logy' in plot_kwargs and plot_kwargs['logy'] else ''
-        figure_name = f"{filename_y_col}_roll-{roll_window}min{logy_str}.png"
+        gsd_data = self.gather_gsd_data(gsd_gather_kwargs)
 
-        fig, axs = plt.subplots(2, 4, sharey=True, sharex=True, figsize=(16,10))
-        twin_axes = []
+        # Get subplots
+        fig, axs = self.create_experiment_subplots()
 
         # Make one plot per experiment
-        exp_codes = list(self.omnimanager.experiments.keys())
+        exp_codes = list(gsd_data.keys())
         exp_codes.sort()
         for exp_code, ax in zip(exp_codes, axs.flatten()):
             self.logger.write(f"Plotting experiment {exp_code}")
 
             plot_kwargs['ax'] = ax
-            twax = ax.twinx()
-            twin_axes.append(twax)
             experiment = self.omnimanager.experiments[exp_code]
-            accumulated_data = experiment.accumulated_data
+            ax.set_title(f"Experiment {exp_code} {experiment.name}")
 
-            self.rolling_av = None
-            self.hydrograph = None
+            # Get the data and group it by the line category
+            exp_data = gsd_data[exp_code]
+            avg_data = exp_data.groupby(level=x_name).mean()
 
-            # Plot the data points
-            accumulated_data.plot(**plot_kwargs)
+            # Plot each group as a line
+            #plot_kwargs['color'] = get_color(0)
+            self.plot_group(avg_data, plot_kwargs)
 
-            # Generate and plot the hydrograph
-            experiment.apply_period_function(self._generate_hydrograph, kwargs)
-            self.hydrograph.sort_index(inplace=True)
-            self.hydrograph.plot(ax=twax, style='g', ylim=(50,800))
-            twax.tick_params('y', labelright='off')
-            #if exp_code in ['2B', '5A']:
-            #    twax.set_ylabel('Discharge (L/s)')
+        self.format_mean_gsd_figure(fig, axs, plot_kwargs)
 
-            # Generate and plot rolled averages
-            self.roll_data(accumulated_data, kwargs)
-            series_plot_kwargs = {k : plot_kwargs[k] for k in plot_kwargs
-                                        if k not in ['x', 'y', 'kind']}
-            #series_plot_kwargs['xlim'] = ax.get_xlim()
-            series_plot_kwargs['style'] = 'r'
-            self.rolling_av.plot(**series_plot_kwargs)
+        # Generate a figure name and save the figure
+        filename_x = x_name.replace('_', '-').lower()
+        filename_y = '*'.join(y_name).replace('_', '-').replace('*', '_').lower()
+        figure_name = f"gsd_{filename_y}_v_{filename_x}.png"
+        self.save_figure(figure_name)
+        plt.show()
 
-            ax.set_title(f"Experiment {experiment.code} {experiment.name}")
+    def format_mean_gsd_figure(self, fig, axs, plot_kwargs):
+        x = plot_kwargs['x']
+        y = plot_kwargs['y']
 
-        # Can't figure out how to share the twinned y axes
-        #for ax_row in 0,1:
-        #    ax = axs[ax_row, 3]
-        #twin_axes[0].get_shared_y_axis().join(*twin_axes)
-        #twin_axes[0].set_ylabel('Discharge (L/s)')
-        #yrange = plot_kwargs['ylim']
-        plt.suptitle(f"{y_column} output ({roll_window} min" +
-                f"roll window, {asctime()})")
+        # Set the spacing and area of the subplots
+        fig.tight_layout()
+        fig.subplots_adjust(top=0.9, left=0.05, bottom=0.075, right=0.90)
 
-        # Save the figure
+        fontsize = 16
+        latex_str = {'D10':r'$D_{10}$', 'D50':r'$D_{50}$', 'D90':r'$D_{90}$', 
+                '_':' ',
+                }
+
+        if len(y) > 1:
+            # Format the common legend if there is more than one y
+            plot_labels = y
+            ax0_lines = axs[0,0].get_lines()
+            fig.legend(handles=ax0_lines, labels=plot_labels,
+                    loc='center right')
+
+        # Set common x label
+        t = r"Experiment time (hours)"
+        s = r"Station (mm)"
+        xlabel = t if x == 'exp_time' else s if x == 'sta_str' else x
+        fig.text(0.5, 0.01, xlabel, ha='center', usetex=True,
+                fontsize=fontsize)
+
+        # Set common y label
+        
+        ylabel = r"Grain size (mm)"
+        fig.text(0.01, 0.5, ylabel, va='center', usetex=True,
+                fontsize=fontsize, rotation='vertical')
+        
+        # Make a title
+        title_y = y.copy()
+        if len(y) > 1:
+            title_y[-1] = f"and {title_y[-1]}"
+        title_y = ', '.join(title_y)
+        for code, ltx in latex_str.items():
+            title_y = title_y.replace(code, ltx)
+        title_str = rf"Change in the flume-mean {title_y} over time"
+        title_str += rf" ({asctime()})"
+        print(title_str)
+        plt.suptitle(title_str, fontsize=fontsize, usetex=True)
+
+
+    def make_gsd_plots(self, x_name='exp_time', y_name='D50'):
+        name = 'time' if x_name =='exp_time' else 'station' if x_name == 'sta_str' else x_name
+        self.logger.write([f"Making gsd {name} plots..."])
+
+        indent_function = self.logger.run_indented_function
+
+        indent_function(self.omnimanager.reload_gsd_data,
+                before_msg="Loading data", after_msg="Data Loaded!")
+
+        indent_function(self.plot_gsd,
+                kwargs={'x_name':x_name, 'y_name':y_name},
+                before_msg=f"Plotting gsd vs {name}",
+                after_msg="Finished Plotting!")
+
+        self.logger.end_output()
+
+    def plot_gsd(self, y_name='D50', x_name='exp_time'):
+        plot_kwargs = {
+                'x'      : x_name,
+                'y'      : y_name,
+                #'kind'   : 'scatter',
+                'legend' : False,
+                }
+        gsd_gather_kwargs = {
+                'columns'   : y_name if isinstance(y_name, list) else [y_name],
+                'new_index' : ['exp_time', 'sta_str'],
+                }
+        kwargs = {'plot_kwargs'    : plot_kwargs,
+                  }
+
+        # Get the name of the lines (exp_time or sta_str) automatically
+        # ie pick the other item in a two item list
+        line_options = gsd_gather_kwargs['new_index'].copy()
+        line_options.remove(x_name)
+        lines_category = line_options[0]
+
+        # Make a color generating function
+        get_color = self.generate_rb_color_fu(8)
+
+        gsd_data = self.gather_gsd_data(gsd_gather_kwargs)
+
+        # Get subplots
+        fig, axs = self.create_experiment_subplots()
+
+        # Make one plot per experiment
+        exp_codes = list(gsd_data.keys())
+        exp_codes.sort()
+        self.plot_labels = []
+        for exp_code, ax in zip(exp_codes, axs.flatten()):
+            self.logger.write(f"Plotting experiment {exp_code}")
+
+            plot_kwargs['ax'] = ax
+            experiment = self.omnimanager.experiments[exp_code]
+            ax.set_title(f"Experiment {exp_code} {experiment.name}")
+
+            # Get the data and group it by the line category
+            exp_data = gsd_data[exp_code]
+            grouped = exp_data.groupby(level=lines_category)
+
+            # Plot each group as a line
+            for i, group in enumerate(grouped):
+                plot_kwargs['color'] = get_color(i)
+                self.plot_group(group, plot_kwargs)
+
+        self.format_gsd_figure(fig, axs, plot_kwargs)
+
+        # Generate a figure name and save the figure
+        filename_y = y_name.replace('_', '-').lower()
+        filename_x = x_name.replace('_', '-').lower()
+        figure_name = f"gsd_{filename_y}_v_{filename_x}.png"
+        self.save_figure(figure_name)
+        plt.show()
+
+    def save_figure(self, figure_name):
         filepath = ospath_join(self.figure_destination, figure_name)
         self.logger.write(f"Saving figure to {filepath}")
         plt.savefig(filepath, orientation='landscape')
-        plt.show()
+        
+    def format_gsd_figure(self, fig, axs, plot_kwargs):
+        x = plot_kwargs['x']
+        y = plot_kwargs['y']
 
-    
+        # Set the spacing and area of the subplots
+        fig.tight_layout()
+        fig.subplots_adjust(top=0.9, left=0.05, bottom=0.075, right=0.90)
+
+        # Format the common legend
+        if x == 'sta_str':
+            # Then lines are times, make nicer time labels for the legend
+            hour_fu = lambda n: 'hour' if n == 1 else 'hours'
+            label_fu = np.vectorize(
+                    lambda m: f"{m//60} {hour_fu(m//60)} {m%60} mins")
+            self.plot_labels = label_fu(self.plot_labels)
+        elif x == 'exp_time':
+            # Then lines are stations, make nicer station labels for the legend
+
+            get_meter = lambda sta_str: float(sta_str[-4:])/1000
+            label_fu = np.vectorize(
+                    lambda sta_str: f"Station {get_meter(sta_str):.1f}m")
+            self.plot_labels = label_fu(self.plot_labels)
+
+        ax0_lines = axs[0,0].get_lines()
+        fig.legend(handles=ax0_lines, labels=self.plot_labels, loc='center right')
+
+        fontsize = 16
+
+        # Set common x label
+        t = r"Experiment time (hours)"
+        s = r"Station (mm)"
+        xlabel = t if x == 'exp_time' else s if x == 'sta_str' else x
+        fig.text(0.5, 0.01, xlabel, ha='center', usetex=True,
+                fontsize=fontsize)
+
+        # Set common y label
+        d50 = r"$D_{50} (mm)$"
+        ylabel = d50 if y == 'D50' else y
+        fig.text(0.01, 0.5, ylabel, va='center', usetex=True,
+                fontsize=fontsize, rotation='vertical')
+        
+        # Make a title
+        title_y = r"$D_{50}$" if y == 'D50' else y
+        title_str = rf"Change in {title_y}"
+        if x == 'exp_time':
+            title_str += r" over time for each station"
+        elif x == 'sta_str':
+            title_str += r" at a station for each time"
+        title_str += rf" ({asctime()})"
+        print(title_str)
+        plt.suptitle(title_str, fontsize=fontsize, usetex=True)
+
+    def plot_group(self, group, plot_kwargs):
+        # Plot each group as a line
+        try:
+            name, group_data = group
+            if name not in self.plot_labels:
+                self.plot_labels.append(name)
+        except (ValueError, AttributeError):
+            group_data = group
+        time_series = group_data.reset_index()
+        time_series.sort_values(plot_kwargs['x'], inplace=True)
+        if 'exp_time' in time_series.columns:
+            time_series['exp_time'] = time_series['exp_time'] / 60
+        time_series.plot(**plot_kwargs)
+        plot_kwargs['ax'].get_xaxis().get_label().set_visible(False)
+        plot_kwargs['ax'].tick_params(bottom=True, top=True, left=True, right=True)
+
+    def gather_gsd_data(self, kwargs):
+        # Gather all the gsd data into a dict of dataframes separated by 
+        # exp_code
+        self.gsd_data_frames = {}
+        self.omnimanager.apply_to_periods(self._gather_gsd_time_data, kwargs)
+
+        # Combines the separate frames into one dataframe per experiment
+        gsd_data = {}
+        for exp_code, frames in self.gsd_data_frames.items():
+            gsd_data[exp_code] = pd.concat(frames)
+        return gsd_data
+
+    def _gather_gsd_time_data(self, period, kwargs):
+        # Have periods add themselves to a precursor of the overall gsd 
+        # dataframe dict
+        cols = kwargs['columns']
+        new_index = kwargs['new_index']
+        exp_code = period.exp_code
+
+        data = period.gsd_data
+        if data is not None:
+            data.reset_index(inplace=True)
+            data.set_index(new_index, inplace=True)
+            if exp_code not in self.gsd_data_frames:
+                self.gsd_data_frames[exp_code] = []
+            self.gsd_data_frames[exp_code].append(data.loc[:, cols])
+
+
     # Functions to plot only Qs data
-    def load_Qs_data(self):
-        #self.experiments = self.loader.load_pickle(self.exp_omnipickle)
-        accumulate_kwargs = {
-                'check_ignored_fu' : self._check_ignore_period,
-                }
-        self.omnimanager.reload_Qs(self.loader, accumulate_kwargs)
-        #for experiment in self.experiments.values():
-        #    experiment.load_Qs_data(self.loader)
-        #    experiment.accumulate_data({'accumulate_kwargs':accumulate_kwargs})
-
     def make_experiment_plots(self):
         self.logger.write(["Making experiment plots..."])
 
@@ -613,7 +824,9 @@ class UniversalGrapher:
 if __name__ == "__main__":
     # Run the script
     grapher = UniversalGrapher()
-    grapher.make_gsd_time_plots()
+    grapher.make_mean_gsd_time_plots(y_name=['D50'])#, 'D90'])
+    #grapher.make_gsd_plots(x_name='exp_time', y_name='D50')
+    #grapher.make_gsd_plots(x_name='sta_str',  y_name='D50')
     #grapher.make_experiment_plots()
     #grapher.make_hysteresis_plots()
     #grapher.make_cumulative_plots()

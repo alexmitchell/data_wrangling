@@ -54,6 +54,9 @@ class PeriodData:
         np = PeriodData(op.Qs_primary_picklepath)
         np.Qs_secondary_picklepath = op.Qs_secondary_picklepath 
         np.gsd_picklepath = op.gsd_picklepath 
+        #print(op.gsd_picklepath)
+        #print(np.gsd_picklepath)
+        #assert(False)
 
         return np
 
@@ -118,7 +121,9 @@ class PeriodData:
 
     def reload_gsd_data(self, loader):
         # Loads the gsd data
-        self.gsd_data = loader.load_pickle(self.gsd_picklepath, add_path=False)
+        gsd_path = self.gsd_picklepath
+        if gsd_path is not None:
+            self.gsd_data = loader.load_pickle(gsd_path, add_path=False)
 
     
     # Processing
@@ -159,6 +164,7 @@ class Experiment:
         ne = Experiment(oe.code)
         logger.write(f"Updating exp {oe.code} from {oe.init_time} to {ne.init_time}")
         for rank, op in oe.periods.items():
+            #print(f"period {op.exp_code}: {op.gsd_picklepath}")
             ne.periods[rank] = PeriodData.from_existing(op)
         ne.sort_ranks()
 
