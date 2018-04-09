@@ -188,7 +188,7 @@ class UniversalGrapher:
         # Generate a figure name and save the figure
         filename_x = x_name.replace('_', '-').lower()
         filename_y = '*'.join(y_name).replace('_', '-').replace('*', '_').lower()
-        figure_name = f"gsd_{filename_y}_v_{filename_x}.png"
+        figure_name = f"gsd_mean_{filename_y}_v_{filename_x}.png"
         self.save_figure(figure_name)
         plt.show()
 
@@ -233,6 +233,117 @@ class UniversalGrapher:
         for code, ltx in latex_str.items():
             title_y = title_y.replace(code, ltx)
         title_str = rf"Change in the flume-mean {title_y} over time"
+        title_str += rf" ({asctime()})"
+        print(title_str)
+        plt.suptitle(title_str, fontsize=fontsize, usetex=True)
+
+
+    def make_box_gsd_plots(self, x_name='exp_time', y_name='D50'):
+        name = 'time' if x_name =='exp_time' else 'station' if x_name == 'sta_str' else x_name
+        self.logger.write([f"Making gsd {name} plots..."])
+
+        indent_function = self.logger.run_indented_function
+
+        indent_function(self.omnimanager.reload_gsd_data,
+                before_msg="Loading data", after_msg="Data Loaded!")
+
+        indent_function(self.plot_box_gsd,
+                kwargs={'x_name':x_name, 'y_name':y_name},
+                before_msg=f"Plotting gsd vs {name}",
+                after_msg="Finished Plotting!")
+
+        self.logger.end_output()
+
+    def plot_box_gsd(self, y_name='D50', x_name='exp_time'):
+        plot_kwargs = {
+                'x'      : x_name,
+                'y'      : y_name,
+                #'kind'   : 'scatter',
+                'legend' : False,
+                }
+        gsd_gather_kwargs = {
+                'columns'   : y_name if isinstance(y_name, list) else [y_name],
+                'new_index' : ['exp_time', 'sta_str'],
+                }
+        kwargs = {'plot_kwargs'    : plot_kwargs,
+                  }
+
+        # Get the name of the lines (exp_time or sta_str) automatically
+        # ie pick the other item in a two item list
+        line_options = gsd_gather_kwargs['new_index'].copy()
+        line_options.remove(x_name)
+        lines_category = line_options[0]
+
+        # Make a color generating function
+        get_color = self.generate_rb_color_fu(8)
+
+        gsd_data = self.gather_gsd_data(gsd_gather_kwargs)
+
+        # Get subplots
+        fig, axs = self.create_experiment_subplots()
+
+        # Make one plot per experiment
+        exp_codes = list(gsd_data.keys())
+        exp_codes.sort()
+        self.plot_labels = []
+        for exp_code, ax in zip(exp_codes, axs.flatten()):
+            self.logger.write(f"Plotting experiment {exp_code}")
+
+            #plot_kwargs['ax'] = ax
+            experiment = self.omnimanager.experiments[exp_code]
+
+            # Get the data and group it by the line category
+            exp_data = gsd_data[exp_code]
+            exp_data.reset_index(inplace=True)
+            exp_data['exp_time'] = exp_data['exp_time'] / 60
+            exp_data.set_index(gsd_gather_kwargs['new_index'], inplace=True)
+            #grouped = exp_data.groupby(level=lines_category)
+            exp_data.boxplot(column=y_name, by=x_name, ax=ax)
+            ax.get_xaxis().get_label().set_visible(False)
+            ax.tick_params(bottom=True, top=True, left=True, right=True)
+            ax.set_title(f"Experiment {exp_code} {experiment.name}")
+
+        self.format_box_gsd_figure(fig, axs, plot_kwargs)
+
+        # Generate a figure name and save the figure
+        filename_y = y_name.replace('_', '-').lower()
+        filename_x = x_name.replace('_', '-').lower()
+        figure_name = f"gsd_box_{filename_y}_v_{filename_x}.png"
+        self.save_figure(figure_name)
+        plt.show()
+
+    def format_box_gsd_figure(self, fig, axs, plot_kwargs):
+        x = plot_kwargs['x']
+        y = plot_kwargs['y']
+
+        # Set the spacing and area of the subplots
+        fig.tight_layout()
+        fig.subplots_adjust(top=0.9, left=0.05, bottom=0.075, right=0.90)
+
+        # Format the common legend
+
+        fontsize = 16
+
+        # Set common x label
+        t = r"Experiment time (hours)"
+        s = r"Station (mm)"
+        xlabel = t if x == 'exp_time' else s if x == 'sta_str' else x
+        fig.text(0.5, 0.01, xlabel, ha='center', usetex=True,
+                fontsize=fontsize)
+
+        # Set common y label
+        d50 = r"$D_{50} (mm)$"
+        ylabel = d50 if y == 'D50' else y
+        fig.text(0.01, 0.5, ylabel, va='center', usetex=True,
+                fontsize=fontsize, rotation='vertical')
+        
+        # Make a title
+        title_y = r"$D_{50}$" if y == 'D50' else y
+        title_str = rf"Change in {title_y}"
+        if x == 'exp_time':
+            title_str += r" over time for each station"
+        elif x == 'sta_str':
+            title_str += r" at a station for each time"
         title_str += rf" ({asctime()})"
         print(title_str)
         plt.suptitle(title_str, fontsize=fontsize, usetex=True)
@@ -311,11 +422,6 @@ class UniversalGrapher:
         self.save_figure(figure_name)
         plt.show()
 
-    def save_figure(self, figure_name):
-        filepath = ospath_join(self.figure_destination, figure_name)
-        self.logger.write(f"Saving figure to {filepath}")
-        plt.savefig(filepath, orientation='landscape')
-        
     def format_gsd_figure(self, fig, axs, plot_kwargs):
         x = plot_kwargs['x']
         y = plot_kwargs['y']
@@ -368,6 +474,12 @@ class UniversalGrapher:
         print(title_str)
         plt.suptitle(title_str, fontsize=fontsize, usetex=True)
 
+
+    def save_figure(self, figure_name):
+        filepath = ospath_join(self.figure_destination, figure_name)
+        self.logger.write(f"Saving figure to {filepath}")
+        plt.savefig(filepath, orientation='landscape')
+        
     def plot_group(self, group, plot_kwargs):
         # Plot each group as a line
         try:
@@ -824,7 +936,10 @@ class UniversalGrapher:
 if __name__ == "__main__":
     # Run the script
     grapher = UniversalGrapher()
-    grapher.make_mean_gsd_time_plots(y_name=['D50'])#, 'D90'])
+    #grapher.make_box_gsd_plots(x_name='exp_time', y_name='D50')
+    #grapher.make_box_gsd_plots(x_name='sta_str',  y_name='D50')
+    grapher.make_mean_gsd_time_plots(y_name=['D16', 'D50', 'D84'])
+    #grapher.make_mean_gsd_time_plots(y_name=['Fsx'])#, 'D90'])
     #grapher.make_gsd_plots(x_name='exp_time', y_name='D50')
     #grapher.make_gsd_plots(x_name='sta_str',  y_name='D50')
     #grapher.make_experiment_plots()
