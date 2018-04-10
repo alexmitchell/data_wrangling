@@ -10,6 +10,9 @@ from helpyr_misc import nsplit
 # been extended to elsewhere. Therefore, they have some legacy functions that 
 # should be cleaned up eventually to fit the current framework.
 
+# To handle more and more data, perhaps change PeriodData to store a dictionary 
+# of DataObjects (have to define a new token)?
+
 class PeriodData:
     # The PeriodData class is meant as a simple container to store all the 
     # information associated with each period.

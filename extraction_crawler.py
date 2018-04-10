@@ -40,7 +40,7 @@ class ExtractionCrawler (Crawler):
         self.logger.end_output()
 
     def make_pickle(self, pkl_name, data):
-        self.logger.write(["Performing picklery on {}".format(pkl_name)])
+        self.logger.write(f"Performing picklery on {pkl_name}")
         self.logger.increase_global_indent()
         picklepaths = self.loader.produce_pickles({pkl_name:data})
         self.logger.decrease_global_indent()
@@ -52,10 +52,10 @@ class ExtractionCrawler (Crawler):
         self.logger.write_section_break()
         self.logger.write(start_run_msgs)
 
-        data_path = self.root
-        pickle_path = os.path.join(data_path, 'raw-pickles')
-        ensure_dir_exists(pickle_path, self.logger)
-        self.loader = data_loading.DataLoader(data_path, pickle_path, self.logger)
+        data_dir = self.root
+        pickle_dir = os.path.join(data_dir, 'raw-pickles')
+        ensure_dir_exists(pickle_dir, self.logger)
+        self.loader = data_loading.DataLoader(data_dir, pickle_dir, self.logger)
 
 
     def run_extract_manual_data(self):
@@ -63,7 +63,7 @@ class ExtractionCrawler (Crawler):
         # pickles.
         self.generic_intro(["Extracting manual data"])
 
-        self.logger.write(["Finding files"])
+        self.logger.write("Finding files")
         depths_xlsx = self.get_target_files(['flow-depths-??.xlsx'])
         masses_xlsx = self.get_target_files(['masses-??.xlsx'])
 
@@ -72,7 +72,7 @@ class ExtractionCrawler (Crawler):
         self.end()
 
     def extract_depths(self, depths_xlsx):
-        self.logger.write(["Extracting depth data"])
+        self.logger.write("Extracting depth data")
         self.logger.increase_global_indent()
         kwargs = {
                 'sheetname'  : 'Sheet1',
@@ -83,7 +83,7 @@ class ExtractionCrawler (Crawler):
                 }
 
         for depth_filepath in depths_xlsx:
-            self.logger.write(["Extracting {}".format(depth_filepath)])
+            self.logger.write(f"Extracting {depth_filepath}")
 
             data_dic = {} # For temp processing... delete later
 
@@ -94,10 +94,10 @@ class ExtractionCrawler (Crawler):
 
             # Read and prep raw data
             try:
-                data = self.loader.load_xlsx(depth_filepath, kwargs, is_path=True)
+                data = self.loader.load_xlsx(depth_filepath, kwargs, add_path=False)
             except XLRDError:
                 kwargs['sheetname'] = "All"
-                data = self.loader.load_xlsx(depth_filepath, kwargs, is_path=True)
+                data = self.loader.load_xlsx(depth_filepath, kwargs, add_path=False)
             data = self.reformat_data(data)
 
             # Extract surface and bed measurements then save them as pickles
@@ -109,19 +109,19 @@ class ExtractionCrawler (Crawler):
                 loc_data.index = loc_data.index.droplevel(4) # Drop location category
 
                 # Make pickles
-                pkl_name = "{}-{}-{}".format(experiment, "profile", location)
+                pkl_name = f"{experiment}-profile-{location}"
                 self.make_pickle(pkl_name, loc_data)
                 data_dic[location] = loc_data
                 self.logger.decrease_global_indent()
 
         self.logger.decrease_global_indent()
-        self.logger.write(["Depth data extraction complete"])
+        self.logger.write("Depth data extraction complete")
 
     def reformat_data(self, data):
         # Rename the row labels and reorder all the rows to chronologically 
         # match my experiment design. Without reordering, falling comes before 
         # rising and the repeated discharged could get confused.
-        self.logger.write(["Reformatting data"])
+        self.logger.write("Reformatting data")
         data.sort_index(inplace=True)
 
         # Rename provided level names
@@ -162,16 +162,17 @@ class ExtractionCrawler (Crawler):
         # Extract the Qs data from text files and save them as pickles
         self.generic_intro(["Extracting light table data"])
 
-        self.logger.write(["Finding files"])
-        sediment_flux_files = self.get_target_files(['Qs*.txt'],
-                verbose_file_list=False)
+        self.logger.write("Finding files")
+        sediment_flux_files = self.get_target_files(['Qs?.txt', 'Qs??.txt'],
+                verbose_file_list=True)
+        raise NotImplementedError
 
         self.extract_light_table(sediment_flux_files)
 
         self.end()
 
     def extract_light_table(self, sediment_flux_txt_files):
-        self.logger.write(["Extracting light table data"])
+        self.logger.write("Extracting light table data")
         self.logger.increase_global_indent()
 
         # Prepare kwargs for reading Qs text files
@@ -202,7 +203,7 @@ class ExtractionCrawler (Crawler):
 
         # Create new pickles if necessary
         for period_path in period_dict:
-            self.logger.write([f"Extracting {period_path}"])
+            self.logger.write(f"Extracting {period_path}")
             self.logger.increase_global_indent()
 
             fnames = period_dict[period_path]
@@ -216,13 +217,13 @@ class ExtractionCrawler (Crawler):
         if self.loader.is_pickled(metapickle_name):
             # Pickled metapickle already exists.
             # Update the metapickle
-            self.logger.write([f"Updating {metapickle_name}..."])
+            self.logger.write(f"Updating {metapickle_name}...")
             existing = self.loader.load_pickle(metapickle_name, use_source=False)
             pickle_dict = self._merge_metapickle(pickle_dict, existing)
         self.make_pickle(metapickle_name, pickle_dict)
 
         self.logger.decrease_global_indent()
-        self.logger.write(["Light table data extraction complete"])
+        self.logger.write("Light table data extraction complete")
         #self.check_for_Qs_errors(data)
         #self.check_for_Qs_duplication
     
@@ -247,7 +248,7 @@ class ExtractionCrawler (Crawler):
         # Dict values are sorted lists of Qs#.txt file paths
         # Dict keys are the results directory paths
         period_dict = {}
-        self.logger.write(["Building dict of Qs files"])
+        self.logger.write("Building dict of Qs files")
         for Qs_filepath in sediment_flux_txt:
 
             # Extract meta data from filepath
@@ -276,13 +277,13 @@ class ExtractionCrawler (Crawler):
             pkl_name = f"{experiment}_{step}_{rtime[8:]}_{name[:-4]}"
 
             if self.loader.is_pickled(pkl_name):
-                self.logger.write([f'Pickle {name} preexists. Nothing to do.'])
+                self.logger.write(f'Pickle {name} preexists. Nothing to do.')
             else:
-                self.logger.write([f'Pickling {name}'])
+                self.logger.write(f'Pickling {name}')
                 
                 # Read and prep raw data
                 filepath = os.path.join(period_path, name)
-                data = self.loader.load_txt(filepath, Qs_kwargs, is_path=True)
+                data = self.loader.load_txt(filepath, Qs_kwargs, add_path=False)
 
                 # Make pickles
                 picklepaths += self.make_pickle(pkl_name, data)
@@ -306,8 +307,8 @@ class ExtractionCrawler (Crawler):
 
 if __name__ == "__main__":
     crawler = ExtractionCrawler()
-    exp_root = '/home/alex/ubc/research/feed-timing/data/{}'
-    #crawler.set_root(exp_root.format('data-links/manual-data'))
+    exp_root = '/home/alex/ubc/research/feed-timing/data'
+    #crawler.set_root(f"{exp_root}/data-links/manual-data")
     #crawler.run('extract-manual')
-    crawler.set_root(exp_root.format('extracted-lighttable-results'))
+    crawler.set_root(f"{exp_root}/extracted-lighttable-results")
     crawler.run('extract-light-table')

@@ -287,6 +287,11 @@ class UniversalGrapher:
         exp_codes.sort()
         self.plot_labels = []
         for exp_code, ax in zip(exp_codes, axs.flatten()):
+            #if exp_code != '2B':
+            #    ### Hacking stuff together
+            #    ### Skip anything but 2B
+            #    ### Because that's the only one with 2m data
+            #    continue
             self.logger.write(f"Plotting experiment {exp_code}")
 
             #plot_kwargs['ax'] = ax
@@ -300,6 +305,10 @@ class UniversalGrapher:
             #grouped = exp_data.groupby(level=lines_category)
             exp_data.boxplot(column=y_name, by=x_name, ax=ax)
             ax.get_xaxis().get_label().set_visible(False)
+            xticks_locs = ax.get_xticks()
+            xticks_labels = ax.get_xticklabels()
+            ax.set_xticks(xticks_locs[::3])
+            ax.set_xticklabels(xticks_labels[::3])
             ax.tick_params(bottom=True, top=True, left=True, right=True)
             ax.set_title(f"Experiment {exp_code} {experiment.name}")
 
@@ -308,6 +317,7 @@ class UniversalGrapher:
         # Generate a figure name and save the figure
         filename_y = y_name.replace('_', '-').lower()
         filename_x = x_name.replace('_', '-').lower()
+        ### Hacking together the 2m part
         figure_name = f"gsd_box_{filename_y}_v_{filename_x}.png"
         self.save_figure(figure_name)
         plt.show()
@@ -936,9 +946,9 @@ class UniversalGrapher:
 if __name__ == "__main__":
     # Run the script
     grapher = UniversalGrapher()
-    #grapher.make_box_gsd_plots(x_name='exp_time', y_name='D50')
+    grapher.make_box_gsd_plots(x_name='exp_time', y_name='D50')
     #grapher.make_box_gsd_plots(x_name='sta_str',  y_name='D50')
-    grapher.make_mean_gsd_time_plots(y_name=['D16', 'D50', 'D84'])
+    #grapher.make_mean_gsd_time_plots(y_name=['D16', 'D50', 'D84'])
     #grapher.make_mean_gsd_time_plots(y_name=['Fsx'])#, 'D90'])
     #grapher.make_gsd_plots(x_name='exp_time', y_name='D50')
     #grapher.make_gsd_plots(x_name='sta_str',  y_name='D50')

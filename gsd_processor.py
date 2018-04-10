@@ -16,6 +16,10 @@ from omnipickle_manager import OmnipickleManager
 from crawler import Crawler
 import global_settings as settings
 
+# currently set to handed 2m gsd
+# Doing it the quick way....
+# Search for: self.gsd_txt_filepaths = 
+
 class GSDProcessor:
     """ Collects combines the distributed GrainSize.txt files. Updates the omnipickle."""
 
@@ -57,12 +61,17 @@ class GSDProcessor:
     def find_gsd_txt_files(self):
         # Find all the GrainSize.txt files
         self.logger.write("")
-        crawler = Crawler(logger=self.logger)
-        crawler.set_root(self.root)
-        self.gsd_txt_filepaths = crawler.get_target_files(
-                "??-*L-t??-8m_sta-*_GrainSize.txt", verbose_file_list=False)
+        #crawler = Crawler(logger=self.logger)
+        #crawler.set_root(self.root)
+        #self.gsd_txt_filepaths = crawler.get_target_files(
+        #        "??-*L-t??-8m_sta-*_GrainSize.txt", verbose_file_list=False)
         # example filename: 3B-r87L-t60-8m_sta-2000_GrainSize.txt
-        crawler.end()
+        #crawler.end()
+        #gsd_list_path = '/home/alex/feed-timing/code/matlab/supporting-files/2m_2B_final_gsd_list.txt'
+        gsd_list_path = '/home/alex/feed-timing/code/matlab/supporting-files/8m_final_gsd_list.txt'
+        with open(gsd_list_path) as f:
+            self.logger.write(f'Reading from {gsd_list_path}')
+            self.gsd_txt_filepaths = f.read().splitlines()
 
     def load_data(self):
         # Load all the GrainSize.txt files and combine
