@@ -165,9 +165,10 @@ class ExtractionCrawler (Crawler):
         self.logger.write("Finding files")
         sediment_flux_files = self.get_target_files(['Qs?.txt', 'Qs??.txt'],
                 verbose_file_list=True)
-        raise NotImplementedError
-
-        self.extract_light_table(sediment_flux_files)
+        if len(sediment_flux_files) == 0:
+            self.logger.write("No files found!")
+        else:
+            self.extract_light_table(sediment_flux_files)
 
         self.end()
 
