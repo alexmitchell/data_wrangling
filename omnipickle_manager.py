@@ -64,15 +64,21 @@ class OmnipickleManager:
 
         self.store() # save the new tree
 
-    def reload_Qs_data(self):
+    def reload_Qs_data(self, kwargs={}):
         # reload Qs data
         for experiment in self.experiments.values():
             experiment.reload_Qs_data(self.omniloader)
+            experiment.accumulate_Qs_data(kwargs)
 
     def reload_gsd_data(self):
         # reload gsd data
         for experiment in self.experiments.values():
             experiment.reload_gsd_data(self.omniloader)
+
+    def reload_depth_data(self):
+        # reload depth data
+        for experiment in self.experiments.values():
+            experiment.reload_depth_data(self.omniloader)
 
 
     # Used by the Qs secondary processor.
@@ -139,6 +145,17 @@ class OmnipickleManager:
         for experiment in self.experiments.values():
             not_found = experiment.add_gsd_data(gsd_pickledir, gsd_data)
             write(f"Experiment {experiment.code} could not find gsd data for:")
+            write(not_found, local_indent=1)
+
+    
+    # Used by manual_processor
+    def add_depth_data(self, depth_pickledir, depth_data):
+        # Add the gsd data to each experiment for extraction.
+        # depth_data uses a multiindex to separate data
+        write = self.logger.write
+        for experiment in self.experiments.values():
+            not_found = experiment.add_depth_data(depth_pickledir, depth_data)
+            write(f"Experiment {experiment.code} could not find depth data for:")
             write(not_found, local_indent=1)
 
     

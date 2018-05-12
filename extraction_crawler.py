@@ -58,6 +58,7 @@ class ExtractionCrawler (Crawler):
         self.loader = data_loading.DataLoader(data_dir, pickle_dir, self.logger)
 
 
+    ### Obsolete for manual data. Use manual_processor.py
     def run_extract_manual_data(self):
         # Extract the depth and data from excel files and save them as  
         # pickles.

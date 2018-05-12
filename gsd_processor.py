@@ -35,7 +35,7 @@ class GSDProcessor:
         # Start up loader
         self.loader = DataLoader(self.pickle_destination, logger=self.logger)
         
-        # Relead omnimanager
+        # Reload omnimanager
         self.omnimanager = OmnipickleManager(self.logger)
         self.omnimanager.restore()
         self.logger.write("Updating experiment definitions")
@@ -56,7 +56,7 @@ class GSDProcessor:
         indent_function(self.omnimanager.store,
                 before_msg="Storing omnipickle", after_msg="Finished!")
 
-        print(self.omnimanager.experiments['1B'].periods[35].gsd_picklepath)
+        #print(self.omnimanager.experiments['1B'].periods[35].gsd_picklepath)
 
     def find_gsd_txt_files(self):
         # Find all the GrainSize.txt files

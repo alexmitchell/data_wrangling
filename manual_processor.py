@@ -1,29 +1,169 @@
-import re
-import os
+
+from os.path import join as pjoin
+from os.path import split as psplit
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import scipy as scp
-import statsmodels.api as sm
-
+from time import asctime
 from xlrd.biffh import XLRDError
 
+#import re
+#import matplotlib.pyplot as plt
+#import scipy as scp
+#import statsmodels.api as sm
+
 # From helpyr
-import data_loading
-from helpyr_misc import ensure_dir_exists
+from data_loading import DataLoader
 from logger import Logger
 from crawler import Crawler
+from helpyr_misc import ensure_dir_exists
 
-import global_settings
+from omnipickle_manager import OmnipickleManager
+from crawler import Crawler
+import global_settings as settings
 
-class PlottingCrawler (Crawler):
 
-    def __init__(self, log_filepath="./log-files/log-plotting-crawler.txt", no_log=False):
-        logger = Logger(log_filepath, default_verbose=True, no_log=no_log)
-        Crawler.__init__(self, logger)
+class ManualProcessor:
 
-        self.mode_dict['plot-hr-av-profiles'] = self.run_hr_av_profiles
-        self.mode_dict['plot-slope-profiles'] = self.run_slope_profiles
+    def __init__(self):
+        self.root = settings.manual_data_dir
+        self.pickle_destination = settings.manual_pickles_dir
+        self.log_filepath = pjoin(settings.log_dir, "manual_processor.txt")
+        
+        # Start up logger
+        self.logger = Logger(self.log_filepath, default_verbose=True)
+        self.logger.write(["Begin GSD Processor output", asctime()])
+
+        # Start up loader
+        self.loader = DataLoader(self.pickle_destination, logger=self.logger)
+        
+        # Reload omnimanager
+        self.omnimanager = OmnipickleManager(self.logger)
+        self.omnimanager.restore()
+        self.logger.write("Updating experiment definitions")
+        self.omnimanager.update_tree_definitions()
+
+    def run(self):
+        indent_function = self.logger.run_indented_function
+
+        indent_function(self.find_data_files,
+                before_msg="Finding manual data files", after_msg="Finished!")
+
+        indent_function(self.load_data,
+                before_msg="Loading data", after_msg="Finished!")
+        
+        indent_function(self.update_omnipickle,
+                before_msg="Updating omnipickle", after_msg="Finished!")
+
+        indent_function(self.omnimanager.store,
+                before_msg="Storing omnipickle", after_msg="Finished!")
+
+    def find_data_files(self):
+        ### Find all the flow depth and trap masses text files
+        self.logger.write("")
+        crawler = Crawler(logger=self.logger)
+        crawler.set_root(self.root)
+        self.depth_xlsx_filepaths = crawler.get_target_files(
+                "??-flow-depths.xlsx", verbose_file_list=True)
+        #self.masses-_xlsx_filepaths = crawler.get_target_files(
+        #        "??-masses.xlsx", verbose_file_list=False)
+        # example filename: 3B-flow-depths.xlsx  3B-masses.xlsx
+        crawler.end()
+
+    def load_data(self):
+        # Load all the manual data files and combine
+        indent_function = self.logger.run_indented_function
+
+        self.all_depth_data = {}
+        indent_function(self._load_depth_xlsx,
+                before_msg="Loading depth data", after_msg="Depth data extraction complete")
+
+        #indent_function(self._load_masses_xlsx,
+        #        before_msg="Loading mass data", after_msg="Mass data extraction complete")
+
+        #indent_function(self._load_sieve_xlsx,
+        #        before_msg="Loading sieve data", after_msg="Sieve data extraction complete")
+
+    def _load_depth_xlsx(self):
+        kwargs = {
+                'sheetname'  : 'Sheet1',
+                'header'     : 0,
+                'skiprows'   : 1,
+                'index_col'  : [0, 1, 2, 3],
+                'parse_cols' : range(1,18)
+                }
+
+        surf_data = {}
+        bed_data = {}
+        for depth_filepath in self.depth_xlsx_filepaths:
+
+            ### Extract experiment from filepath
+            # example filename: 3B-flow-depths.xlsx
+            # One file per experiment
+            depth_path, depth_filename = psplit(depth_filepath)
+            exp_code, source_str = depth_filename.split('-', 1)
+            source = source_str.split('.')[0]
+
+            self.logger.write(f"Extracting {depth_filename}")
+
+            # Read and prep raw data
+            try:
+                data = self.loader.load_xlsx(depth_filepath, kwargs, add_path=False)
+            except XLRDError:
+                kwargs['sheetname'] = 'All'
+                data = self.loader.load_xlsx(depth_filepath, kwargs, add_path=False)
+                kwargs['sheetname'] = 'Sheet1'
+            data = self._reformat_depth_data(data)
+
+            self.all_depth_data[exp_code] = data
+
+    def _reformat_depth_data(self, data):
+        # Rename the row labels and reorder all the rows to chronologically 
+        # match my experiment design. Without reordering, falling comes before 
+        # rising and the repeated discharged could get confused.
+        self.logger.write("Reformatting data")
+        data.sort_index(inplace=True)
+
+        # Rename provided level names
+        new_names = ['limb', 'discharge', 'period_time', 'location']
+        data.index.names = new_names
+
+        def orderizer(args):
+            weights = {'rising'  : 0,
+                       'falling' : 1,
+                       50  : 0,
+                       62  : 1,
+                       75  : 2,
+                       87  : 3,
+                       100 : 4
+                      }
+            w_Qmax = weights[100]
+            w_limb = weights[args[0]]
+            w_Q = weights[args[1]]
+            order = w_Q  + 2 * w_limb * (w_Qmax - w_Q)
+            exp_time = order * 60 + args[2]
+            return exp_time
+            
+        # Add a new level providing the row order
+        name = 'exp_time'
+        data[name] = data.index
+        data[name] = data[name].map(orderizer)
+        data.sort_values(by=name, inplace=True)
+
+        #data.set_index(name, append=True, inplace=True)
+        ## Make the Order index level zero
+        #new_names.insert(0, name)
+        #data = data.reorder_levels(new_names)
+        #data.sort_index(inplace=True)
+
+        return data
+
+    def update_omnipickle(self):
+        # Add manual data to omnipickle
+        ensure_dir_exists(self.pickle_destination)
+        self.omnimanager.add_depth_data(self.pickle_destination, self.all_depth_data)
+
+
+#####
 
     def set_fig_dir(self, fig_dir):
         self.fig_dir = fig_dir
@@ -315,12 +455,13 @@ class PlottingCrawler (Crawler):
 
 
 
-
 if __name__ == "__main__":
-    crawler = PlottingCrawler()#no_log=True)
-    exp_root = '/home/alex/ubc/research/feed-timing/data/'
-    crawler.set_root(f"{exp_root}data-links/manual-data/pickles")
-    crawler.set_fig_dir(f"{exp_root}data-links/manual-data/figures")
-    #crawler.setup_loader()
-    crawler.run('plot-slope-profiles')
-    crawler.end()
+    manual_processor = ManualProcessor()
+    manual_processor.run()
+    #crawler = PlottingCrawler()#no_log=True)
+    #exp_root = '/home/alex/ubc/research/feed-timing/data/'
+    #crawler.set_root(f"{exp_root}data-links/manual-data/pickles")
+    #crawler.set_fig_dir(f"{exp_root}data-links/manual-data/figures")
+    ##crawler.setup_loader()
+    #crawler.run('plot-slope-profiles')
+    #crawler.end()
