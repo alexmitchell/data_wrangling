@@ -2,133 +2,270 @@
 
 from os.path import join as pjoin
 from time import asctime
+import numpy as np
 
 # From Helpyr
 from helpyr_misc import nsplit
 
+import global_settings as settings
+
 # These classes were originally coded for the Qs secondary processor, but have 
 # been extended to elsewhere. Therefore, they have some legacy functions that 
 # should be cleaned up eventually to fit the current framework.
+#
+# Tokens (and Omnipickle) are originally created in the Qs_pickle_processor.  
+# Remove this dependency in future version.
 
 # To handle more and more data, perhaps change PeriodData to store a dictionary 
 # of DataObjects (have to define a new token)?
+
+# Is this tree structure even useful? Maybe split data to experiment level 
+# only. It seems that a lot of effort is put into splitting the data, but the 
+# first step when using the data is to add them all together again. Would be 
+# easier to add new types of data or adapt to new experiments without the tree.
+# Speaking of which, I've come to realize that the current version is totally 
+# useless for other people's experiments.
+
+class DataSet:
+    # DataSet is a container for a type of data and the filepath (picklepath) 
+    # where it is stored. Does not load the data until directed or first 
+    # attempted use.
+    #
+    # Once a picklepath is provided, the user can access the data simply by 
+    # using the .data property (ie. data_set.data).
+
+    # Used for creation or updating
+    def __init__(self, name):
+        self.name = name
+        self.__picklepath = None
+        self.__data = None
+
+    def from_existings(old_dataset):
+        nds = DataSet(old_dataset.name)
+        nds.picklepath = old_dataset.picklepath
+        return nds
+
+    def reload_data(self, loader):
+        # Load the data from the picklepath
+        self.__data = loader.load_pickles(self.picklepath, add_path=False)
+    def save_data(self, loader):
+        # Save the data to its picklepath. Overwrites existing pickle.
+        loader.produce_pickles({self.picklepath, self.data}, add_path=False)
+
+    def wipe_data(self):
+        # Delete data (but keep picklepath) so DataSet can be saved without 
+        # duplicating data
+        self.__data = None
+
+
+    # Attributes
+    @property
+    def picklepath(self):
+        return self.__picklepath
+
+    @picklepath.setter
+    def picklepath(self, picklepath):
+        self.__picklepath = picklepath
+
+    @property
+    def data(self):
+        # Access the data.
+        return self.__data
+
 
 class PeriodData:
     # The PeriodData class is meant as a simple container to store all the 
     # information associated with each period.
     # Data includes measurements that happened during or at the end of the 
     # period
+    # This class is specific to Alex's experiment, but the framework could be 
+    # reused for other projects.
 
-    """ PeriodData is a quasi-container class representing the data associated with one period. Functions here should be more general purpose. PeriodData pickles are not intended to contain the actual data. However, they will have paths to the data pickles and functions to reload that data. """
-
-    period_ranking = {"rising" : 0, "falling" : 1,
-            "50L" : 00, "62L" : 10, "75L" : 20, "87L" : 30, "100L" : 40,
-            "t00-t10" : 0, "t10-t20" : 1, "t00-t20" : 2,
-            "t20-t30" : 3, "t30-t40" : 4, "t20-t40" : 5,
-            "t40-t50" : 6, "t50-t60" : 7, "t40-t60" : 8, "t00-t60" : 9,
-                      }
-        
-    # Used for creation or updating
-    def __init__(self, Qs_picklepath):
-        # Set up Qs
-        self.Qs_primary_picklepath = Qs_picklepath
-        self.Qs_secondary_picklepath = None
-        self.Qs_pkl_name = nsplit(Qs_picklepath, 1)[1].split('.',1)[0]
-        _, self.exp_code, self.step, self.period = self.Qs_pkl_name.split('_')
-        self.Qs_data = None
-
-        # Set up gsd
-        self.gsd_picklepath = None
-        self.gsd_data = None
-        
-        # Calculate period ranks
-        self.limb, self.discharge = self.step.split('-')
+    def __init__(self, exp_code, limb, discharge, period_range):
+        # exp_code similar to '1A', '3B', etc.
+        # limb is 'rising' or 'falling'
+        # discharge is int like 62, 100, etc.
+        # period_range similar to 't30-t40'
+       
+        self.exp_code = exp_code
+        self.limb = limb
+        self.discharge = discharge
         self.discharge_int = int(self.discharge[:-1])
-        ranking = PeriodData.period_ranking
+        self.period_range = period_range
+
+        # Calculate/extract more info
+        self.step = f"{limb[0]}{discharge}L" # eg. 'f75L'
+        self.period_end = self.period_range.split('-')[-1] # grab the end time str
+        duration_fu = lambda t0, t1: int(t1[1:]) - int(t0[1:])
+        self.duration = duration_fu(*self.period_range.split('-'))
+        discharge_index = settings.discharge_order.index(self.step)
+        self.feed_rate = settings.feed_rates[self.exp_code][discharge_index]
+
+        # Calculate period ranks
+        period_ranking = {"rising" : 0, "falling" : 1,
+                "50L" : 00, "62L" : 10, "75L" : 20, "87L" : 30, "100L" : 40,
+                "t00-t10" : 0, "t10-t20" : 1, "t00-t20" : 2,
+                "t20-t30" : 3, "t30-t40" : 4, "t20-t40" : 5,
+                "t40-t50" : 6, "t50-t60" : 7, "t40-t60" : 8, "t00-t60" : 9,
+                          }
         get_ranking = lambda l, d, p: d + p + 2*l*(40-d)
-        self.rank = get_ranking(*[ranking[k] for k in
-                                  (self.limb, self.discharge, self.period)])
+        self.rank = get_ranking(*[period_ranking[k] for k in
+                                  (self.limb, self.discharge, self.period_range)])
+
+        # Create the data dictionary {data_name : DataSet}
+        # data is wiped before storage, but can be reloaded from the 
+        # picklepath.
+        self.data_dict = {}
 
     def from_existing(old_period):
         # Create a new PeriodData obj from an existing one. Returns the new 
         # PeriodData object. Used for updating the tree to new definitions of 
         # Experiment and PeriodData classes (ie. changes to this file)
         op = old_period
-        np = PeriodData(op.Qs_primary_picklepath)
-        np.Qs_secondary_picklepath = op.Qs_secondary_picklepath 
-        np.gsd_picklepath = op.gsd_picklepath 
-        #print(op.gsd_picklepath)
-        #print(np.gsd_picklepath)
-        #assert(False)
-
+        np = PeriodData(op.exp_code, op.limb, op.discharge, op.period_range)
+        for okey, ods in op.data_dict.items():
+            np.data_dict[okey] = DataSet.from_existing(ods)
         return np
+        #try:
+        #    np.depth_picklepath = op.depth_picklepath 
+        #except AttributeError:
+        #    np.depth_picklepath = None
+
+    def from_Qs_picklepath(self, Qs_picklepath):
+        # generate a PeriodData object from a given Qs_picklepath
+
+        # Get some meta data from the Qs path (### Change this someday)
+        Qs_pkl_name = nsplit(Qs_picklepath, 1)[1].split('.',1)[0]
+        _, exp_code, step, period_range = Qs_pkl_name.split('_')
+        limb, discharge = step.split('-')
+
+        return PeriodData(exp_code, limb, discharge, period_range)
 
     def save_data(self, loader):
         # Save data prior to wiping. Only really needed when building or 
         # updating the omnipickle. (ie. for the first time the data is added to 
         # the omnipickle and isn't already pickled)
-        path_data_pairs = [
-                (self.Qs_picklepath             , self.Qs_data),
-                (self.gsd_picklepath            , self.gsd_data),
-                ]
-        data_to_save = {}
-        for path, data  in path_data_pairs:
-            if data is not None and path is not None:
-                data_to_save[path] = data
-
-        loader.produce_pickles(data_to_save, add_path=False)
+        for dataset in self.data_dict.values():
+            dataset.save_data()
 
     def wipe_data(self):
         # So I can save the omnipickle/experiment/period objects without 
         # repickling the underlying data
-        self.Qs_data = None
-        self.gsd_data = None
+        for dataset in self.data_dict.values():
+            dataset.wipe_data()
 
-    def add_gsd_data(self, gsd_pickledir, gsd_data):
-        # Extract the proper set of gsd_data if exists
-        # gsd_data has all the data and uses a multiindex to keep them separate
-        # return the name if failed (keep?)
 
-        # Get values to select from multiindex
-        exp_code = self.exp_code
-        period = self.period.split('-')[-1] # grab the second time str
-        limb, flow = self.step.split('-')
-        step = f"{limb[0]}{flow}"
-        length = '8m' if period == 't60' else '2m'
+    # Adding data
+    def _make_new_dataset(self, name, picklepath, kwargs):
+        # If data is provided, then hand that off to the new DataSet to be 
+        # pickled later (ie. if data is provided, then there is no pickled 
+        # version yet.)
+        # "specific_data" is exactly the data to hand off to the DataSet
+        # If "loader" is provided, then save the data
+        nds = DataSet(name)
+        nds.picklepath = picklepath
 
-        try:
+        if 'specific_data' in kwargs:
+            nds.add_data(kwargs['specific_data'])
+            if 'loader' in kwargs:
+                nds.save_data(kwargs['loader'])
+
+        self.data_dict[name] = nds
+
+    def add_Qs_data(self, Qs_picklepath, **kwargs):
+        # See _make_new_dataset for kwargs
+        self._make_new_dataset('Qs-primary', Qs_picklepath, kwargs)
+
+    def add_Qs_secondary_data(self, Qs_picklepath, **kwargs):
+        # See _make_new_dataset for kwargs
+        self._make_new_dataset('Qs-secondary', Qs_picklepath, kwargs)
+
+    def add_gsd_data(self, gsd_picklepath, **kwargs):
+        # "all_data" is all the data and will need to be sliced
+        # "generate_path" indicates that the picklepath provided is actually 
+        # the pickle directory and a path need to be generated.
+        # See _make_new_dataset for more kwargs
+        #
+        # return the name if failed, otherwise return ''
+        if 'all_data' in kwargs and 'specific_data' not in kwargs:
+            # Get values to select from multiindex
+            exp_code = self.exp_code
+            period = self.period_end
+            step = self.step
+            length = '8m' if period == 't60' else '2m'
+
+            idx = pd.IndexSlice
+            index_slicer = idx[exp_code, step, period, :, length]
+            col_slicer = idx[:]
+            all_data = kwargs['all_data']
+            try:
+                kwargs['specific_data'] = all_data.loc[index_slicer, col_slicer]
+            except KeyError:
+                return f"{exp_code}-{step}-{period}-{length}"
+
+        if 'generate_path' is in kwargs:
+            # Picklepath is actually the pickle dir
             pkl_filename = f"{exp_code}-{step}-{period}_gsd.pkl"
-            self.gsd_data = gsd_data.loc[exp_code, step, period, :, length]
-            self.gsd_picklepath = pjoin(gsd_pickledir, pkl_filename)
-        except KeyError:
-            name = f"{exp_code}-{step}-{period}-{length}"
-            return name
-
+            gsd_picklepath = pjoin(gsd_picklepath, pkl_filename)
+        self._make_new_dataset('gsd', gsd_picklepath, kwargs)
         return ''
 
+    def add_depth_data(self, depth_picklepath, **kwargs):
+        if 'all_data' in kwargs and 'specific_data' not in kwargs:
+            # Get values to select from multiindex
+            exp_code = self.exp_code
+            time = int(self.period_end[1:]) - 10
+            step = self.step
+            flow = self.discharge_int
 
-    # Attributes
-    @property
-    def Qs_picklepath(self):
-        # provides the path for the most up to date version of the Qs pickle
-        # (ie. primary vs secondary processed)
-        primary = self.Qs_primary_picklepath
-        secondary = self.Qs_secondary_picklepath
-        return primary if secondary is None else secondary
+            idx = pd.IndexSlice
+            index_slicer = idx[limb, flow, time, :]
+            col_slicer = idx[:]
+            all_data = kwargs['all_data']
+            try:
+                kwargs['specific_data'] = all_data.loc[index_slicer, col_slicer]
+            except KeyError:
+                return f"{exp_code}-{step}-t{time}_flow-depth"
+        if 'generate_path' is in kwargs:
+            # Picklepath is actually the pickle dir
+            pkl_filename = f"{exp_code}-{step}-{period}_flow-depth.pkl"
+            depth_picklepath = pjoin(depth_picklepath, pkl_filename)
+
+        self._make_new_dataset('depth', depth_picklepath, kwargs)
+        return ''
 
 
     # Reloading
     def reload_Qs_data(self, loader):
         # Loads the most up to date version of the Qs pickle
-        self.Qs_data = loader.load_pickle(self.Qs_picklepath, add_path=False)
+        self._Qs_dataset.reload_data(loader)
 
     def reload_gsd_data(self, loader):
         # Loads the gsd data
-        gsd_path = self.gsd_picklepath
-        if gsd_path is not None:
-            self.gsd_data = loader.load_pickle(gsd_path, add_path=False)
+        self.data_dict['gsd'].reload_data(loader)
+
+    def reload_depth_data(self, loader):
+        # Loads the depth data
+        self.data_dict['depth'].reload_data(loader)
 
     
+    # Attributes
+    @property
+    def _Qs_dataset(self):
+        # provides the most up to date Qs DataSet
+        try:
+            ds = self.data_dict['Qs-secondary']
+        except KeyError:
+            ds = self.data_dict['Qs-primary']
+        return ds
+
+    @property
+    def Qs_picklepath(self):
+        # provides the path for the most up to date version of the Qs pickle
+        # (ie. primary vs secondary processed)
+        return self._Qs_dataset.picklepath
+
+
     # Processing
     def apply_period_function(self, fu, kwargs):
         # Call fu with self as an argument
@@ -185,11 +322,22 @@ class Experiment:
         self.sorted_ranks = [ r for r in self.periods.keys()]
         self.sorted_ranks.sort()
 
-    def add_gsd_data(self, gsd_pickledir, gsd_data):
+    def add_gsd_data(self, gsd_pickledir, gsd_data, generate_path=True):
         # Passes the gsd_data to each period for extraction
         failed_list = []
         for period_data in self.periods.values():
-            failed = period_data.add_gsd_data(gsd_pickledir,gsd_data)
+            failed = period_data.add_gsd_data(gsd_pickledir,
+                    all_data=gsd_data, generate_path=True)
+            if failed:
+                failed_list.append(failed)
+        return failed_list
+
+    def add_depth_data(self, depth_pickledir, depth_data):
+        # Passes the depth_data to each period for extraction
+        failed_list = []
+        for period_data in self.periods.values():
+            failed = period_data.add_depth_data(depth_pickledir,
+                    all_data=depth_data, generate_path=True)
             if failed:
                 failed_list.append(failed)
         return failed_list
@@ -212,10 +360,10 @@ class Experiment:
         self.accumulated_data.sort_values(by='exp_time_hrs', inplace=True)
 
     def _accumulate_Qs_data(self, period_data, kwargs):
-        accumulate_Qs_kwargs = kwargs['accumulate_Qs_kwargs']
-        check_ignore = accumulate_Qs_kwargs['check_ignored_fu']
-        if check_ignore(period_data):
-            return
+        if 'check_ignored_fu' in kwargs:
+            check_ignore = kwargs['check_ignored_fu']
+            if check_ignore(period_data):
+                return
 
         if 'cols_to_keep' in kwargs:
             columns_to_keep = accumulate_Qs_kwargs['cols_to_keep']
@@ -227,10 +375,6 @@ class Experiment:
             self.accumulated_data = data
         else:
             self.accumulated_data = self.accumulated_data.append(data)
-
-    def _accumulate_photo_data(self, period_data, kwargs):
-        pass
-
 
     # Saving
     def save_data(self, loader):
@@ -258,5 +402,10 @@ class Experiment:
         # Load gsd data from pickles.
         for period_data in self.periods.values():
             period_data.reload_gsd_data(loader)
+
+    def reload_depth_data(self, loader):
+        # Load depth data from pickles.
+        for period_data in self.periods.values():
+            period_data.reload_depth_data(loader)
 
 
