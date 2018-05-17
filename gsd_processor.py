@@ -127,6 +127,7 @@ class GSDProcessor:
         # Add data to combined data
         self.all_data = pd.concat(run_data_frames, ignore_index=True)
         self.all_data.set_index(index_names, inplace=True)
+        self.all_data.sort_index(inplace=True)
 
     def update_omnipickle(self):
         # Add gsd data to omnipickle

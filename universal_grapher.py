@@ -112,10 +112,12 @@ class UniversalGrapher:
         # Make rolling averages on the provided data.
 
         time = data.loc[:, 'exp_time_hrs']
-        y = data.loc[:, roll_kwargs.pop('y')]
+        y_var = roll_kwargs.pop('y')
+        y = data.loc[:, y_var]
         series = pd.Series(data=y.values, index=time)
 
         rolled = series.rolling(**roll_kwargs)
+        roll_kwargs['y'] = y_var
 
         #rolled = data.rolling(**roll_kwargs)
         average = rolled.mean()
@@ -191,25 +193,35 @@ class UniversalGrapher:
         plt.savefig(filepath, orientation='landscape')
 
     
-    def plot_group(self, group_in, plot_kwargs):
+    def plot_group(self, group, plot_kwargs):
         # Plot each group as a line
+        # Really, this would be more appropriate named as plot_dataframe as it 
+        # is most often used to plot a dataframe. However, it was originally 
+        # written for groupby objects, which I am having trouble using 
+        # properly.
         groups = []
-        names = []
-        if isinstance(group_in, pd.core.frame.DataFrame):
-            groups = [group_in]
-            names = []
-        elif isinstance(group_in, pd.core.groupby.DataFrameGroupBy):
-            names, groups = zip(*[iterval for iterval in group_in])
+        if isinstance(group, pd.core.frame.DataFrame):
+            groups = [group]
+        elif isinstance(group, pd.core.series.Series):
+            groups = [group.to_frame()]
+        elif isinstance(group, pd.core.groupby.DataFrameGroupBy):
+            # Set of groups in groupby object
+            names, groups = zip(*[iter_val for iter_val in group])
             try:
                 for name in names:
                     if name not in self.plot_labels:
                         self.plot_labels.append(name)
             except AttributeError:
                 pass
-        elif isinstance(group_in, pd.core.series.Series):
-            groups = [group_in.to_frame()]
+        elif isinstance(group, tuple) and len(group) == 2:
+            assert isinstance(group[1], pd.core.groupby.DataFrame)
+            # Came from a grouby object
+            self.plot_labels.append(group[0])
+            groups = [group[1]]
         else:
-            print(type(group_in))
+            print("Unknown argument")
+            print(type(group))
+            print(group)
             assert(False)
         for group_data in groups:
             self._time_plot_prep(group_data, plot_kwargs)
@@ -696,8 +708,11 @@ class UniversalGrapher:
 
         data = period.depth_data
         if data is not None:
+            index_names = list(data.index.names)
+            drop_list = list(set(index_names) - set(new_index))
             data.reset_index(inplace=True)
             data.set_index(new_index, inplace=True)
+            data.drop(drop_list, axis=1, inplace=True)
             if exp_code not in self.depth_data_frames:
                 self.depth_data_frames[exp_code] = []
             self.depth_data_frames[exp_code].append(data.loc[:, :])
@@ -1092,7 +1107,6 @@ class UniversalGrapher:
         self.logger.write(["Making experiment plots..."])
 
         #self.experiments = {}
-        self.omnimanager.wipe_data()
         self.ignore_steps = ['rising-50L']
 
         indent_function = self.logger.run_indented_function
@@ -1109,8 +1123,8 @@ class UniversalGrapher:
     def plot_full_exp(self):
         # Meant for plotting one column against time
         x_column = 'exp_time_hrs'
-        #y_column = 'Bedload all'
-        y_column = 'D50'
+        y_column = 'Bedload all'
+        #y_column = 'D50'
         roll_window = 10 #minutes
 
         plot_kwargs = {
@@ -1124,6 +1138,7 @@ class UniversalGrapher:
                 #'ylim' : (0, 40),
                 }
         rolling_kwargs = {
+                'y'           : plot_kwargs['y'],
                 'window'      : roll_window*60, # seconds
                 'min_periods' : 20,
                 'center'      : True,
@@ -1160,16 +1175,16 @@ class UniversalGrapher:
             # Plot the data points
             accumulated_data.plot(**plot_kwargs)
 
-            # Generate and plot the hydrograph
-            experiment.apply_period_function(self._generate_hydrograph, kwargs)
-            self.hydrograph.sort_index(inplace=True)
-            self.hydrograph.plot(ax=twax, style='g', ylim=(50,800))
-            twax.tick_params('y', labelright='off')
+            ## Generate and plot the hydrograph
+            #experiment.apply_period_function(self._generate_hydrograph, kwargs)
+            #self.hydrograph.sort_index(inplace=True)
+            #self.hydrograph.plot(ax=twax, style='g', ylim=(50,800))
+            #twax.tick_params('y', labelright='off')
             #if exp_code in ['2B', '5A']:
             #    twax.set_ylabel('Discharge (L/s)')
 
             # Generate and plot rolled averages
-            self.roll_data(accumulated_data, kwargs)
+            self.roll_data(accumulated_data, roll_kwargs=rolling_kwargs)
             series_plot_kwargs = {k : plot_kwargs[k] for k in plot_kwargs
                                         if k not in ['x', 'y', 'kind']}
             #series_plot_kwargs['xlim'] = ax.get_xlim()
@@ -1741,7 +1756,7 @@ if __name__ == "__main__":
     #grapher.make_loc_shear_plots()
     #grapher.make_flume_shear_plots()
     #grapher.make_avg_depth_plots()
-    #grapher.make_avg_slope_plots()
+    grapher.make_avg_slope_plots()
     #grapher.make_box_gsd_plots(x_name='exp_time', y_name='D50')
     #grapher.make_box_gsd_plots(x_name='sta_str',  y_name='D50')
     #grapher.make_mean_gsd_time_plots(y_name=['D16', 'D50', 'D84'])

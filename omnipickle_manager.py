@@ -33,13 +33,14 @@ class OmnipickleManager:
         self.omniloader = DataLoader(settings.root_dir, logger=logger)
 
     # Data storage functions
-    def store(self):
+    def store(self, overwrite={}):
         # Preparing to save the omnipickle
         # Save and clear out data from the omnipickle.
         # Save the experiment/period tree.
+        # overwrite = {'dataset_name' : bool=False}
         self.logger.write("Saving data")
         for experiment in self.experiments.values():
-            experiment.save_data(self.omniloader)
+            experiment.save_data(self.omniloader, overwrite=overwrite)
             experiment.wipe_data()
 
         # Save the experiment tree.
@@ -47,7 +48,7 @@ class OmnipickleManager:
         # self or the logger or the loader.
         self.logger.write("Saving omnipickle")
         self.omniloader.produce_pickles({self.omnipickle_path : self.experiments},
-                add_path=False)
+                add_path=False, overwrite=True)
 
     def restore(self):
         # Reload the experiment tree containing metadata. Does NOT load the 
@@ -68,7 +69,10 @@ class OmnipickleManager:
         # reload Qs data
         for experiment in self.experiments.values():
             experiment.reload_Qs_data(self.omniloader)
-            experiment.accumulate_Qs_data(kwargs)
+            try:
+                experiment.accumulate_Qs_data(kwargs)
+            except KeyError:
+                continue
 
     def reload_gsd_data(self):
         # reload gsd data
@@ -87,7 +91,7 @@ class OmnipickleManager:
         # to build the experiment tree
         for picklepath in qs_picklepaths:
             # Create PeriodData objects and hand off to Experiment objects
-            period_data = PeriodData(picklepath)
+            period_data = PeriodData.from_Qs_picklepath(picklepath)
 
             exp_code = period_data.exp_code
             if exp_code not in self.experiments:
@@ -105,22 +109,27 @@ class OmnipickleManager:
             accumulate_fu(experiment)
 
     def Qs_finish_secondary_pickles(self, pickle_destination):
-        # Creates the first version of the omnipickle
-        self.logger.write("Updating secondary Qs data")
-        for experiment in self.experiments.values():
-            experiment.apply_period_function(self._update_Qs_picklepath,
-                     kwargs={'pkl_dest' : pickle_destination})
-
-        self.store()
+        raise NotImplementedError
+        #self.logger.write("Updating secondary Qs data")
+        #for experiment in self.experiments.values():
+        #    experiment.apply_period_function(self._update_Qs_picklepath,
+        #             kwargs={'pkl_dest' : pickle_destination})
+        #self.store()
 
     def _update_Qs_picklepath(self, period, kwargs):
-        # Saves the second processes Qs data and updates the 
-        # secondary_picklepath for each period
-        destination = kwargs['pkl_dest']
-        picklepath = os.path.join(destination, period.Qs_pkl_name + '.pkl')
-        path = self.omniloader.produce_pickles({picklepath : period.Qs_data},
-                add_path=False, verbose=False)[0]
-        period.Qs_secondary_picklepath = path
+        raise NotImplementedError
+        ## Saves the second processes Qs data and updates the 
+        ## secondary_picklepath for each period
+        #destination = kwargs['pkl_dest']
+        #picklepath = os.path.join(destination, 
+        #        period._Qs_dataset.misc['Qs_pkl_name'] + '.pkl')
+        #path = self.omniloader.produce_pickles({picklepath : period.Qs_data},
+        #        add_path=False, verbose=False)[0]
+        #period.add_Qs_secondary_data(path)
+
+    def generate_Qs_secondary_picklepath(self, period, pickle_destination):
+        return os.path.join(pickle_destination, 
+                period._Qs_dataset.misc['Qs_pkl_name'] + '.pkl')
 
     
     # Used by the Qs grapher (will be superseded by universal grapher)

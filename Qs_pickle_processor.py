@@ -135,38 +135,39 @@ class PrimaryPickleProcessor:
         indent_function = self.logger.run_indented_function
         # Load data
         indent_function(self.load_data,
-                        "Loading data...", "Finished loading data!")
+                        before_msg="Loading data...",
+                        after_msg="Finished loading data!")
 
         # Primary Error Checks
         indent_function(self.primary_error_check,
-                        "Running primary error checks...",
-                        "Finished primary error checks!")
+                        before_msg="Running primary error checks...",
+                        after_msg="Finished primary error checks!")
 
         # Combining Qsn chunks
         indent_function(self.combine_Qsn_chunks,
-                        "Combining Qs chunks...",
-                        "Finished combining Qs chunks!")
+                        before_msg="Combining Qs chunks...",
+                        after_msg="Finished combining Qs chunks!")
 
         # Secondary Error Checks
         indent_function(self.secondary_error_check,
-                        "Running secondary error checks...",
-                        "Finished secondary error checks!")
+                        before_msg="Running secondary error checks...",
+                        after_msg="Finished secondary error checks!")
 
         # Calc summary stats
         indent_function(self.calculate_stats,
-                        "Calculating summary stats...",
-                        "Summary stats calculated!")
+                        before_msg="Calculating summary stats...",
+                        after_msg="Summary stats calculated!")
 
         # Write to pickle
         indent_function(self.produce_processed_pickle,
-                        "Producing processed pickles...",
-                        "Processed pickles produced!")
+                        before_msg="Producing processed pickles...",
+                        after_msg="Processed pickles produced!")
 
         # Write a combined Qs txt file
         if self.output_txt:
                 indent_function(self.write_combined_txt,
-                        "Writing combined txt file...",
-                        "Done writing file!")
+                        before_msg="Writing combined txt file...",
+                        after_msg="Done writing file!")
 
     def load_data(self):
         # Load the sorted list of paths for this period
@@ -215,7 +216,7 @@ class PrimaryPickleProcessor:
         accumulating_overlap = None
 
         exclude_cols = ['timestamp', 'missing ratio', 'vel', 'sd vel', 'number vel']
-        target_cols = exclude_df_cols(exclude_cols)
+        target_cols = exclude_df_cols(combined, exclude_cols)
 
         # Set up a few lambda functions
         get_num = lambda s: int(s[2:]) # get the file number from the name
@@ -494,7 +495,8 @@ class SecondaryPickleProcessor:
         self.omnimanager.Qs_accumulate_time(self.exp_accumulate_time)
 
     def save_pickles(self):
-        self.omnimanager.Qs_finish_secondary_pickles(self.pickle_destination)
+        #self.omnimanager.Qs_finish_secondary_pickles(self.pickle_destination)
+        self.omnimanager.store(overwrite={'Qs-secondary' : True})
 
 
     # Functions that operate "within" an Experiment or PeriodData object
@@ -524,19 +526,29 @@ class SecondaryPickleProcessor:
             seconds += accumulate
             accumulate = seconds [-1]
 
-            # Save the experiment time as a new column in the dataframe
-            period_data.Qs_data['exp_time'] = seconds
-            period_data.Qs_data['exp_time_hrs'] = seconds / 3600
+            # Save the experiment time as new columns in the dataframe
+            Qs_primary = period_data.data_dict['Qs-primary']
+            Qs_data = Qs_primary.data
+            Qs_data['exp_time'] = seconds
+            Qs_data['exp_time_hrs'] = seconds / 3600
             # Bad programming form here... Easiest place to add a discharge 
             # column too
             discharge = period_data.discharge_int
-            period_data.Qs_data['discharge'] = discharge * np.ones_like(seconds)
+            Qs_data['discharge'] = discharge * np.ones_like(seconds)
+
+            pickle_path = self.omnimanager.generate_Qs_secondary_picklepath(
+                    period_data, self.pickle_destination)
+
+            misc = {'Qs_pkl_name' : Qs_primary.misc['Qs_pkl_name']}
+            period_data.add_Qs_secondary_data(pickle_path,
+                    specific_data=Qs_data, misc=misc)
 
             prev_period_data = period_data
 
         self.logger.decrease_global_indent()
         self.logger.write("Final accumulations times (start (hrs), end (hrs), name):")
         self.logger.increase_global_indent()
+        pkl_name_fu = lambda p: p._Qs_dataset.misc['Qs_pkl_name']
         for rank in experiment.sorted_ranks:
             period_data = experiment.periods[rank]
             #period_data.Qs_data.set_index('exp_time', inplace=True)
@@ -544,7 +556,7 @@ class SecondaryPickleProcessor:
             # log some stuff
             new_index = np.round(period_data.Qs_data.index.values / 360)/10 #hrs
             first, last = [new_index[i] for i in (0, -1)]
-            self.logger.write(f"{first}, {last}, {period_data.Qs_pkl_name}")
+            self.logger.write(f"{first}, {last}, {pkl_name_fu(period_data)}")
         self.logger.decrease_global_indent()
 
     def get_gap(self, curr, prev):
@@ -552,9 +564,9 @@ class SecondaryPickleProcessor:
         # returns the expected seconds between the two periods
         
         # Build step order
-        limbs = ['rising']*5 + ['falling']*3
+        limbs = ['r']*5 + ['f']*3
         discharges = [50, 62, 75, 87, 100, 87, 75, 62]
-        step_order = [f"{l}-{d}L" for l, d in zip(limbs, discharges)]
+        step_order = [f"{l}{d}L" for l, d in zip(limbs, discharges)]
 
         curr_step = curr.step
         prev_step = prev.step
@@ -567,7 +579,7 @@ class SecondaryPickleProcessor:
         index_diff = curr_index - prev_index 
 
         # Get period start and end info
-        period_ints = lambda p: [int(t[1:]) for t in p.period.split('-')]
+        period_ints = lambda p: [int(t[1:]) for t in p.period_range.split('-')]
         curr_start, curr_end = period_ints(curr)
         prev_start, prev_end = period_ints(prev)
 
@@ -575,15 +587,16 @@ class SecondaryPickleProcessor:
         step_duration = 60 # 1 hour in minutes
         gap = step_duration * index_diff + curr_start - prev_end
 
+        pkl_name_fu = lambda p: p._Qs_dataset.misc['Qs_pkl_name']
         if gap > 0:
             # Error, missing data
             self.logger.warning(["Missing data", 
                 f"Missing {gap} minutes of data " +
-                f"between {prev.Qs_pkl_name} and {curr.Qs_pkl_name}"])
+                f"between {pkl_name_fu(prev)} and {pkl_name_fu(curr)}"])
         else:
             # Data is okay.
             self.logger.write(
-                    f"No gap from {prev.Qs_pkl_name} to {curr.Qs_pkl_name}")
+                    f"No gap from {pkl_name_fu(prev)} to {pkl_name_fu(curr)}")
 
         return gap * 60 # return gap in seconds
 

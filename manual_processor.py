@@ -55,7 +55,8 @@ class ManualProcessor:
                 before_msg="Updating omnipickle", after_msg="Finished!")
 
         indent_function(self.omnimanager.store,
-                before_msg="Storing omnipickle", after_msg="Finished!")
+                before_msg="Storing omnipickle", after_msg="Finished!",
+                kwargs={'overwrite' : {'depth': True}})
 
     def find_data_files(self):
         ### Find all the flow depth and trap masses text files
@@ -113,6 +114,7 @@ class ManualProcessor:
                 data = self.loader.load_xlsx(depth_filepath, kwargs, add_path=False)
                 kwargs['sheetname'] = 'Sheet1'
             data = self._reformat_depth_data(data)
+            data.sort_index(inplace=True)
 
             self.all_depth_data[exp_code] = data
 
@@ -160,7 +162,8 @@ class ManualProcessor:
     def update_omnipickle(self):
         # Add manual data to omnipickle
         ensure_dir_exists(self.pickle_destination)
-        self.omnimanager.add_depth_data(self.pickle_destination, self.all_depth_data)
+        self.omnimanager.add_depth_data(self.pickle_destination,
+                self.all_depth_data)
 
 
 #####
