@@ -2,11 +2,12 @@
 
 from os.path import join as ospath_join
 from time import asctime
+from time import sleep
 import numpy as np
-import pandas as pd
 import matplotlib as mpl
 import matplotlib.pyplot as plt
-import seaborn as sns
+import pandas as pd
+#import seaborn as sns
 import statsmodels.api as sm
 
 # From Helpyr
@@ -246,7 +247,7 @@ class UniversalGrapher:
         plot_kwargs['ax'].tick_params(
                 bottom=True, top=True, left=True, right=True)
 
-    def generic_plot_experiments(self, plot_fu, post_plot_fu, data, plot_kwargs, figure_name, subplot_shape=(4,2)):
+    def generic_plot_experiments(self, plot_fu, post_plot_fu, data, plot_kwargs, figure_name, subplot_shape=(4,2), save=True):
         # Generic framework for plotting for the 8 experiments
         # Data is recommended to be a dict of experiments, but doesn't have to 
         # be
@@ -269,7 +270,8 @@ class UniversalGrapher:
         post_plot_fu(fig, axs, plot_kwargs)
 
         # Generate a figure name and save the figure
-        self.save_figure(figure_name)
+        if save:
+            self.save_figure(figure_name)
         plt.show()
 
     def format_generic_figure(self, fig, axs, plot_kwargs, fig_kwargs):
@@ -304,6 +306,294 @@ class UniversalGrapher:
         
         # Make a title
         plt.suptitle(title_str, fontsize=fontsize, usetex=True)
+
+
+    # Functions to plot only dem data
+    def make_dem_stats_plots(self):
+        self.logger.write([f"Making dem stats time plots..."])
+
+        indent_function = self.logger.run_indented_function
+
+        indent_function(self.omnimanager.reload_dem_data,
+                before_msg="Loading data", after_msg="Data Loaded!")
+
+        indent_function(self.plot_dem_stats,
+                before_msg=f"Plotting dem stats",
+                after_msg="Finished Plotting!")
+
+        self.logger.end_output()
+
+    def plot_dem_stats(self):
+        # Stats are based on Curran Waters 2014
+        # Do stuff before plot loop
+        x_name = 'exp_time'
+        # y_name options:
+        y_names = ['mean', 'stddev', 'skewness', 'kurtosis']
+        plot_kwargs = {
+                'x'      : x_name,
+                #'y'      : y_name,
+                #'kind'   : 'scatter',
+                'legend' : False,
+                }
+        dem_gather_kwargs = {
+                'sta_lim'    : settings.stationing_2m,
+                'wall_trim'  : settings.dem_wall_trim,
+                }
+
+        dem_data = self.gather_dem_data(dem_gather_kwargs)
+
+        # Calculate stats
+        dem_stats = {}
+        exp_codes = list(dem_data.keys())
+        exp_codes.sort()
+        for exp_code in exp_codes:
+            self.logger.write(f"Calculating stats for {exp_code}")
+            dem_stats[exp_code] = self._calc_dem_stats(exp_code, dem_data)
+
+        # Generate a base file name
+        filename_x = x_name.replace('_', '-').lower()
+        if 'sta_lim' in dem_gather_kwargs:
+            sta_min, sta_max = dem_gather_kwargs['sta_lim']
+            subset_str = f"_sta-{sta_min}-{sta_max}"
+        else:
+            subset_str = ''
+        figure_name = f"dem_{{}}_v_{filename_x}{subset_str}.png"
+
+        # Plot the 4 different stats
+        for y_name in y_names:
+            self.logger.write(f"Plotting {y_name}")
+            self.logger.increase_global_indent()
+            plot_kwargs['y'] = y_name
+            filename_y = y_name.replace('_', '-').lower()
+
+            # Start plot loop
+            self.generic_plot_experiments(
+                self._plot_dem_stats, self._format_dem_stats, 
+                dem_stats, plot_kwargs, figure_name.format(filename_y))
+            self.logger.decrease_global_indent()
+
+    def _calc_dem_stats(self, exp_code, dem_data, kwargs={}):
+        # Calculate the four different statistics from Curran Waters 2014
+        m2cm = 100
+        cm2m = 1/100
+
+        # Keep ordered lists of the keys and resulting data
+        # Will be converted later to pandas dataframe with multiindex
+        key_limb = []
+        key_discharge = []
+        key_time = []
+        exp_times = []
+
+        dem_means = []
+        dem_stddevs = []
+        dem_skewnesses = []
+        dem_kurtoses = []
+        for period_key, period_dem in dem_data[exp_code].items():
+            limb, discharge, time, exp_time = period_key
+            key_limb.append(limb)
+            key_discharge.append(discharge)
+            key_time.append(time)
+            exp_times.append(exp_time)
+
+            # Calculate overall mean elevation
+            mean = np.mean(period_dem)
+
+            # Calculate bed elevation variance (std dev squared)
+            # Can I simply use overall mean?? Eq uses mean value for that 
+            # location?
+            deviation = period_dem - mean
+            variance = np.mean(deviation**2)
+            stddev = np.sqrt(variance)
+            #stddev2 = np.nanstd(period_dem) # Same as above
+
+            # Calculate skewness
+            n_points = period_dem.size
+            skewness = np.sum(deviation**3) / (n_points * stddev**3)
+
+            # Calculate kurtosis
+            kurtosis = np.sum(deviation**4) / (n_points * stddev**4) - 3
+
+            ## Some debugging code
+            #print(exp_code, period_key)
+            ##print(period_dem[::50, ::100])
+            #print(f"Mean = {mean}")
+            #print(f"Std dev = {stddev}")
+            #print(f"Skewness = {skewness}")
+            #print(f"Kurtosis = {kurtosis}")
+            #plt.figure(10)
+            #plt.imshow(period_dem)
+            #plt.figure(20)
+            #plt.hist(period_dem.flatten(), 50, normed=True)
+            #plt.show(block=False)
+            #sleep(0.5)
+            #plt.close('all')
+
+            # Add it to the lists
+            dem_means.append(mean)
+            dem_stddevs.append(stddev)
+            dem_skewnesses.append(skewness)
+            dem_kurtoses.append(kurtosis)
+
+        # Create the dataframe
+        mindex = pd.MultiIndex.from_arrays([key_limb, key_discharge, key_time],
+                names=['limb', 'discharge', 'time'])
+        stats_df = pd.DataFrame({'exp_time' : exp_times,
+                                'mean'      : dem_means,
+                                'stddev'    : dem_stddevs,
+                                'skewness'  : dem_skewnesses,
+                                'kurtosis'  : dem_kurtoses,
+                                },
+                index=mindex)
+        return stats_df
+
+    def _plot_dem_stats(self, exp_code, all_stats_data, plot_kwargs):
+        # Do stuff during plot loop
+        # Plot an experiment
+
+        # Not actually grouped, but can still use self.plot_group
+        stats_data = all_stats_data[exp_code]
+        self.plot_group(stats_data, plot_kwargs)
+
+    def _format_dem_stats(self, fig, axs, plot_kwargs):
+        # Format the figure after the plot loop
+        y_name = plot_kwargs['y']
+        y_labels = {
+                'mean'     : ('Mean', '(mm)'),
+                'stddev'   : ('Standard Deviation', '(mm)'),
+                'skewness' : ('Skewness', ''),
+                'kurtosis' : ('Kurtosis', ''),
+                }
+        name, units = y_labels[y_name]
+        y_label = rf"{name}" + " {units}" if units else rf"{units}"
+        fig_kwargs = {
+                'xlabel'        : r"Experiment time (hours)",
+                'ylabel'        : rf"Bed Elevation {y_label}",
+                'title'         : rf"{name} of the detrended bed surface elevations for the 2m subsection",
+                'legend_labels' : [rf"Elevation {name}"],
+                }
+        self.format_generic_figure(fig, axs, plot_kwargs, fig_kwargs)
+
+
+    def make_dem_roughness_plots(self):
+        self.logger.write([f"Making dem roughness time plots..."])
+
+        indent_function = self.logger.run_indented_function
+
+        indent_function(self.omnimanager.reload_dem_data,
+                before_msg="Loading data", after_msg="Data Loaded!")
+
+        indent_function(self.plot_dem_roughness,
+                before_msg=f"Plotting dem roughness",
+                after_msg="Finished Plotting!")
+
+        self.logger.end_output()
+
+    def plot_dem_roughness(self):
+        # Do stuff before plot loop
+        x_name = 'exp_time'
+        y_name = 'stddev'
+        plot_kwargs = {
+                'x'      : x_name,
+                'y'      : y_name,
+                #'kind'   : 'scatter',
+                'legend' : False,
+                }
+        dem_gather_kwargs = {
+                }
+
+        dem_data = self.gather_dem_data(dem_gather_kwargs)
+
+        filename_x = x_name.replace('_', '-').lower()
+        filename_y = y_name.replace('_', '-').lower()
+        figure_name = f"dem_{filename_y}_v_{filename_x}.png"
+
+        # Start plot loop
+        self.generic_plot_experiments(
+            self._plot_dem_roughness, self._format_dem_roughness, 
+            dem_data, plot_kwargs, figure_name)
+
+    def _plot_dem_roughness(self, exp_code, dem_data, plot_kwargs):
+        # Do stuff during plot loop
+        # Plot an experiment
+        m2cm = 100
+        cm2m = 1/100
+
+        key_limb = []
+        key_discharge = []
+        key_time = []
+        stddev = []
+        exp_times = []
+        for period_key, period_dem in dem_data[exp_code].items():
+            stddev.append(np.nanstd(period_dem))
+            limb, discharge, time, exp_time = period_key
+            key_limb.append(limb)
+            key_discharge.append(discharge)
+            key_time.append(time)
+            exp_times.append(exp_time)
+
+        mindex = pd.MultiIndex.from_arrays([key_limb, key_discharge, key_time],
+                names=['limb', 'discharge', 'time'])
+        stats_df = pd.DataFrame({'stddev' : stddev, 'exp_time' : exp_times},
+                index=mindex)
+
+        # Not actually grouped, but can still use self.plot_group
+        self.plot_group(stats_df, plot_kwargs)
+
+    def _format_dem_roughness(self, fig, axs, plot_kwargs):
+        # Format the figure after the plot loop
+        fig_kwargs = {
+                'xlabel'        : r"Experiment time (hours)",
+                'ylabel'        : r"Bed Elevation Standard Deviation (mm)",
+                'title'         : r"Standard deviations of the detrended bed surface elevations",
+                'legend_labels' : [r"Elevation Std dev"],
+                }
+        self.format_generic_figure(fig, axs, plot_kwargs, fig_kwargs)
+
+
+    def gather_dem_data(self, kwargs):
+        # Gather all the dem data into a dict of data dicts separated by 
+        # exp_code = { exp_code : {(limb, flow, time) : data}}
+        self.dem_data_all = {}
+        self.omnimanager.apply_to_periods(self._gather_dem_data, kwargs)
+
+        return self.dem_data_all
+
+    def _gather_dem_data(self, period, kwargs):
+        # Have periods add themselves to the overall dem dict
+        exp_code = period.exp_code
+
+        data = period.dem_data
+        if data is not None:
+            dem_res = settings.dem_resolution # mm/px
+            data_copy = data.copy()
+            if 'sta_lim' in kwargs:
+                # Throw away data outside the stationing limits
+                # sta_lim = stationing for a subsection of the dem
+                dem_offset = settings.dem_long_offset
+                index_lim = [(x - dem_offset) // dem_res for x in kwargs['sta_lim']]
+                idx_min, idx_max = index_lim
+                data = data[:, idx_min:idx_max]
+
+            if 'wall_trim' in kwargs:
+                # Throw away data too close to the wall
+                trim = kwargs['wall_trim']
+                n_trim_rows = trim // dem_res
+                data = data[n_trim_rows:-n_trim_rows, :]
+
+            #f1 = plt.figure(1)
+            #plt.imshow(data_copy)
+            #f2 = plt.figure(2)
+            #plt.imshow(data)
+            #plt.show()
+            #input()
+            #assert(False)
+
+            key = (period.limb, period.discharge, period.period_end,
+                    period.exp_time_end)
+            if exp_code in self.dem_data_all:
+                self.dem_data_all[exp_code][key] = data
+            else:
+                self.dem_data_all[exp_code] = {key : data}
 
 
     # Functions to plot only manual data
@@ -1753,10 +2043,12 @@ class UniversalGrapher:
 if __name__ == "__main__":
     # Run the script
     grapher = UniversalGrapher()
+    grapher.make_dem_stats_plots()
+    #grapher.make_dem_roughness_plots()
     #grapher.make_loc_shear_plots()
     #grapher.make_flume_shear_plots()
     #grapher.make_avg_depth_plots()
-    grapher.make_avg_slope_plots()
+    #grapher.make_avg_slope_plots()
     #grapher.make_box_gsd_plots(x_name='exp_time', y_name='D50')
     #grapher.make_box_gsd_plots(x_name='sta_str',  y_name='D50')
     #grapher.make_mean_gsd_time_plots(y_name=['D16', 'D50', 'D84'])

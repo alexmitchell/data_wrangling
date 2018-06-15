@@ -49,10 +49,11 @@ comments and ideas:
   graphing. However, the data is not necessarily defined for the same times 
   (different times, time resolutions, labels, etc.). Splitting down into 
   periods helped with keeping track of which data chunks were related to each 
-  other. The original intent was to allow easy comparisons and calculations 
-  between different types of data within one period. However, I have yet to use 
-  the data in this way. (the simple calculations I've done so far either 
-  operate on the whole dataset or used groupby)
+  other and for non-dataframe data. The original intent was to allow easy 
+  comparisons and calculations between different types of data within one 
+  period. However, I have yet to use the data in this way. (the simple 
+  calculations I've done so far either operate on the whole dataset or used 
+  groupby)
   
   The alternative is highest level class contains the entire data set for each 
   type of data. (eg. one var for all Qs data, one var for all gsd data, etc.) 

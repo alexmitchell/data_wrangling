@@ -27,8 +27,8 @@ import global_settings as settings
 class OmnipickleManager:
     def __init__(self, logger):
         self.logger = logger
-        self.omnipickle_name = "omnipickle"
-        self.omnipickle_path = f"/home/alex/feed-timing/data/{self.omnipickle_name}.pkl"
+        self.omnipickle_name = settings.omnipickle_name
+        self.omnipickle_path = settings.omnipickle_path
         self.experiments = {} # {exp_code : Experiment}
         self.omniloader = DataLoader(settings.root_dir, logger=logger)
 
@@ -38,6 +38,9 @@ class OmnipickleManager:
         # Save and clear out data from the omnipickle.
         # Save the experiment/period tree.
         # overwrite = {'dataset_name' : bool=False}
+        self.logger.write("Restoring Omnipickle Manager")
+        self.logger.increase_global_indent()
+
         self.logger.write("Saving data")
         for experiment in self.experiments.values():
             experiment.save_data(self.omniloader, overwrite=overwrite)
@@ -50,16 +53,20 @@ class OmnipickleManager:
         self.omniloader.produce_pickles({self.omnipickle_path : self.experiments},
                 add_path=False, overwrite=True)
 
+        self.logger.decrease_global_indent()
+
     def restore(self):
         # Reload the experiment tree containing metadata. Does NOT load the 
         # actual data.
+        self.logger.write("Restoring Omnipickle Manager")
         self.experiments = self.omniloader.load_pickle(self.omnipickle_path,
                                               add_path = False)
 
     def update_tree_definitions(self):
         # if you change the tokens.py file, you must recreate the tree for the 
         # changes to take effect
-        #
+        self.logger.write("Updating data tree definitions")
+
         for exp_code, old_experiment in self.experiments.items():
             self.experiments[exp_code] = Experiment.from_existing(old_experiment, self.logger)
 
@@ -83,6 +90,11 @@ class OmnipickleManager:
         # reload depth data
         for experiment in self.experiments.values():
             experiment.reload_depth_data(self.omniloader)
+
+    def reload_dem_data(self):
+        # reload dem data
+        for experiment in self.experiments.values():
+            experiment.reload_dem_data(self.omniloader)
 
 
     # Used by the Qs secondary processor.
@@ -146,7 +158,19 @@ class OmnipickleManager:
             experiment.apply_period_function(fu, kwargs)
 
 
-    # Used by gsd_processor
+    # Used by gsd, manual, or dem processors
+    def add_generic_data(self, add_fu, pickledir, data, name=''):
+        # Add arbitrary data to each experiment for extraction.
+        # add_fu should be one of the add_*_data functions from Experiment
+        # data should be all of the data for this type type (probably a 
+        # dataframe with multiindex to separate it)
+        write = self.logger.write
+        name = name + ' ' if name else ''
+        for experiment in self.experiments.values():
+            not_found = add_fu(experiment, pickledir, data)
+            write(f"Experiment {experiment.code} could not find {name}data for:")
+            write(not_found, local_indent=1)
+
     def add_gsd_data(self, gsd_pickledir, gsd_data):
         # Add the gsd data to each experiment for extraction.
         # gsd_data uses a multiindex to separate data
@@ -156,8 +180,6 @@ class OmnipickleManager:
             write(f"Experiment {experiment.code} could not find gsd data for:")
             write(not_found, local_indent=1)
 
-    
-    # Used by manual_processor
     def add_depth_data(self, depth_pickledir, depth_data):
         # Add the gsd data to each experiment for extraction.
         # depth_data uses a multiindex to separate data
@@ -166,6 +188,13 @@ class OmnipickleManager:
             not_found = experiment.add_depth_data(depth_pickledir, depth_data)
             write(f"Experiment {experiment.code} could not find depth data for:")
             write(not_found, local_indent=1)
+
+    def add_dem_data(self, dem_pickledir, dem_data):
+        # Add the dem data to each experiment for extraction.
+        # dem_data is an np array. one array per hour at end of step
+        add_dem_fu = Experiment.add_dem_data
+        name = 'dem'
+        self.add_generic_data(add_dem_fu, dem_pickledir, dem_data, name)
 
     
     # Attributes

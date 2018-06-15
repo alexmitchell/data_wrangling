@@ -31,7 +31,7 @@ class ManualProcessor:
         
         # Start up logger
         self.logger = Logger(self.log_filepath, default_verbose=True)
-        self.logger.write(["Begin GSD Processor output", asctime()])
+        self.logger.write(["Begin Manual Processor output", asctime()])
 
         # Start up loader
         self.loader = DataLoader(self.pickle_destination, logger=self.logger)
@@ -167,7 +167,7 @@ class ManualProcessor:
 
 
 #####
-
+"""
     def set_fig_dir(self, fig_dir):
         self.fig_dir = fig_dir
         ensure_dir_exists(fig_dir)
@@ -456,6 +456,7 @@ class ManualProcessor:
     def get_scale(self, min, max, n_colors):
         return (max-min) * np.linspace(0, 1, n_colors) + min
 
+"""
 
 
 if __name__ == "__main__":

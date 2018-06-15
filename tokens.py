@@ -99,6 +99,7 @@ class PeriodData:
     # This class is specific to Alex's experiment, but the framework could be 
     # reused for other projects.
 
+    # Creation and Token I/O
     def __init__(self, exp_code, limb, discharge, period_range):
         # exp_code similar to '1A', '3B', etc.
         # limb is 'rising' or 'falling'
@@ -118,6 +119,8 @@ class PeriodData:
         self.duration = duration_fu(*self.period_range.split('-'))
         discharge_index = settings.discharge_order.index(self.step)
         self.feed_rate = settings.feed_rates[self.exp_code][discharge_index]
+        self.exp_time_start = self.calc_exp_time()
+        self.exp_time_end = self.calc_exp_time(60)
 
         # Calculate period ranks
         period_ranking = {"rising" : 0, "falling" : 1,
@@ -174,6 +177,32 @@ class PeriodData:
         # repickling the underlying data
         for dataset in self.data_dict.values():
             dataset.wipe_data()
+
+
+    def calc_exp_time(self, partial_time=0):
+        # Estimate the overall experiment time during this period.
+        # Returns minutes since experiment started (based on design not 
+        # necessarily data duration)
+        weights = {'rising'  : 0,
+                   'falling' : 1,
+                   50  : 0,
+                   62  : 1,
+                   75  : 2,
+                   87  : 3,
+                   100 : 4
+                  }
+        w_Qmax = weights[100] # bc 100L/s is max in my experiment
+        w_limb = weights[self.limb]
+        w_Q = weights[self.discharge_int]
+        order = w_Q  + 2 * w_limb * (w_Qmax - w_Q)
+        exp_time = order * 60 + partial_time
+        return exp_time
+            
+        ## Add a new level providing the row order
+        #name = 'exp_time'
+        #data[name] = data.index
+        #data[name] = data[name].map(orderizer)
+        #data.sort_values(by=name, inplace=True)
 
 
     # Adding data
@@ -273,32 +302,26 @@ class PeriodData:
         return ''
 
     def add_dem_data(self, dem_picklepath, **kwargs):
-        raise NotImplementedError
-        if 'all_data' in kwargs and 'specific_data' not in kwargs:
-            # Get values to select from multiindex
-            exp_code = self.exp_code
-            period = self.period_end
-            time = int(self.period_end[1:]) - 10
-            step = self.step
-            flow = self.discharge_int
-            limb = self.limb
+        exp_code = self.exp_code
+        step = self.step
+        time = self.period_end
+        length = '8m' if self.period_end == 't60' else '2m'
+        period_info_str = f"{exp_code}-{step}-{time}-{length}"
 
-            #idx = pd.IndexSlice
-            #index_slicer = idx[limb, flow, time, :]
-            #col_slicer = idx[:]
-            #all_data = kwargs['all_data']
-            #print(f"{exp_code}-{step}-t{time}_flow-depth")
-            #print(all_data)
-            #print(all_data.loc[index_slicer, col_slicer])
-            #assert(False)
-            #try:
-            #    kwargs['specific_data'] = all_data.loc[index_slicer, col_slicer]
-            #except KeyError:
-            #    return f"{exp_code}-{step}-t{time}_flow-depth"
+        if 'all_data' in kwargs and 'specific_data' not in kwargs:
+            # Get values to select from all_data dict {period_info : dem 
+            # npArray}
+            all_data = kwargs['all_data']
+
+            if period_info_str in all_data:
+                kwargs['specific_data'] = all_data[period_info_str]
+            else:
+                return period_info_str
+
         if 'generate_path' in kwargs:
             # Picklepath is actually the pickle dir
-            pkl_filename = f"{exp_code}-{step}-t{time}_dem.pkl"
-            depth_picklepath = pjoin(depth_picklepath, pkl_filename)
+            pkl_filename = f"{period_info_str}_dem.pkl"
+            dem_picklepath = pjoin(dem_picklepath, pkl_filename)
 
         self._make_new_dataset('dem', dem_picklepath, kwargs)
         return ''
@@ -320,6 +343,11 @@ class PeriodData:
         # Loads the depth data
         if 'depth' in self.data_dict:
             self.data_dict['depth'].reload_data(loader)
+
+    def reload_dem_data(self, loader):
+        # Loads the dem data
+        if 'dem' in self.data_dict:
+            self.data_dict['dem'].reload_data(loader)
 
     
     # Attributes
@@ -356,6 +384,13 @@ class PeriodData:
     def depth_data(self):
         try:
             return self.data_dict['depth'].data
+        except KeyError:
+            return None
+
+    @property
+    def dem_data(self):
+        try:
+            return self.data_dict['dem'].data
         except KeyError:
             return None
 
@@ -418,6 +453,17 @@ class Experiment:
 
 
     # Adding new data sets
+    def add_generic_data(self, period_fu, **kwargs):
+        # Add an arbitrary dataset to the PeriodData objects
+        # period_fu should be one of the add_*_data functions from PeriodData
+        # kwargs are passed directly to the period_fu
+        failed_list = []
+        for period_data in self.periods.values():
+            failed = period_fu(period_data, **kwargs)
+            if failed:
+                failed_list.append(failed)
+        return failed_list
+
     def add_gsd_data(self, gsd_pickledir, gsd_data, generate_path=True):
         # Passes the gsd_data to each period for extraction
         failed_list = []
@@ -440,19 +486,12 @@ class Experiment:
 
     def add_dem_data(self, dem_pickledir, dem_data):
         period_fu = PeriodData.add_dem_data
-        args = {'dem_picklepath': dem_pickledir,
-                'all_data'      : dem_data[self.code],
-                'generate_path' : True}
-        return self.add_generic_data, period_fu, args)
+        kwargs = {'dem_picklepath': dem_pickledir,
+                  'all_data'      : dem_data[self.code],
+                  'generate_path' : True}
+        return self.add_generic_data(period_fu, **kwargs)
 
-    def add_generic_data(self, period_fu, args):
-        failed_list = []
-        for period_data in self.periods.values():
-            failed = period_fu(period_data, **args)
-            if failed:
-                failed_list.append(failed)
-        return failed_list
-
+    
     # Processing
     def apply_period_function(self, fu, kwargs={}):
         # Pass a function on to the period data.
@@ -525,5 +564,10 @@ class Experiment:
         # Load depth data from pickles.
         for period_data in self.periods.values():
             period_data.reload_depth_data(loader)
+
+    def reload_dem_data(self, loader):
+        # Load dem data from pickles.
+        for period_data in self.periods.values():
+            period_data.reload_dem_data(loader)
 
 

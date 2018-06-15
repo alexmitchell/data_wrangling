@@ -9,6 +9,11 @@ flume_slope = 0.022
 flume_width = 1 #m
 init_bed_height = 21 #cm ### Double check this!
 
+stationing_2m = [4500, 6500] # stationing in mm
+dem_resolution = 2 #mm/px
+dem_long_offset = 1124 # mm stationing of most downstream edge
+dem_wall_trim = 200 # mm from each wall to throw away
+
 
 discharge_order = ['r50L', 'r62L', 'r75L', 'r87L', 'r100L',
                    'f87L', 'f75L', 'f62L']
@@ -29,6 +34,10 @@ feed_rates = {
 root_dir = "/home/alex/feed-timing/data"
 figure_destination = f"{root_dir}/prelim-figures"
 log_dir = "/home/alex/feed-timing/code/log-files"
+
+# omnipickle dirs
+omnipickle_name = "omnipickle"
+omnipickle_path = f"{root_dir}/{omnipickle_name}.pkl"
 
 # lighttable dirs
 lighttable_data_dir = f"{root_dir}/extracted-lighttable-results"
