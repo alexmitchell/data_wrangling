@@ -12,7 +12,8 @@ init_bed_height = 21 #cm ### Double check this!
 stationing_2m = [4500, 6500] # stationing in mm
 dem_resolution = 2 #mm/px
 dem_long_offset = 1124 # mm stationing of most downstream edge
-dem_wall_trim = 200 # mm from each wall to throw away
+dem_wall_trim = 100 # mm from each wall to throw away
+dem_color_limits = [100, 260] # mm bed elevation range limits
 
 
 discharge_order = ['r50L', 'r62L', 'r75L', 'r87L', 'r100L',

@@ -82,6 +82,20 @@ class UniversalGrapher:
         self.ignore_steps = []
 
     # General use functions
+    def generic_greeting(self, name, load_fu, plot_fu):
+        self.logger.write([f"Making {name} plots..."])
+
+        indent_function = self.logger.run_indented_function
+
+        indent_function(load_fu,
+                before_msg="Loading data", after_msg="Data Loaded!")
+
+        indent_function(plot_fu,
+                before_msg=f"Plotting {name}",
+                after_msg="Finished Plotting!")
+
+        self.logger.end_output()
+
     def create_experiment_subplots(self, rows=4, cols=2):
         # So that I can create a standardized grid for the 8 experiments
         fig, axs = plt.subplots(rows, cols, sharey=True, sharex=True, figsize=(16,10))
@@ -309,19 +323,352 @@ class UniversalGrapher:
 
 
     # Functions to plot only dem data
+    def make_dem_subplots(self):
+        self.generic_greeting("dem semivariogram",
+                self.omnimanager.reload_dem_data,
+                self.plot_dem_subplots)
+
+    def plot_dem_subplots(self):
+        # Can't use the generic_plot_experiments function because of the way I 
+        # want to display and save them.
+        plot_kwargs = {
+                }
+        dem_gather_kwargs = {
+                'sta_lim'    : settings.stationing_2m,
+                'wall_trim'  : settings.dem_wall_trim,
+                }
+
+        dem_data = self.gather_dem_data(dem_gather_kwargs)
+
+        # Calculate period ranks
+        ranking = {"rising" : 0, "falling" : 1,
+                "50L" : 0, "62L" : 1, "75L" : 2, "87L" : 3, "100L" : 4}
+        get_rank = lambda l, d: d + 2*l*(4-d)
+        get_ax_index = lambda l, d: get_rank(*[ranking[k] for k in (l, d)])
+
+        # Generate a base file name
+        filename_base = f"dems_{{}}_2m.png"
+
+        # Start plotting; 1 plot per experiment
+        color_min, color_max = settings.dem_color_limits
+        exp_codes = list(dem_data.keys())
+        exp_codes.sort()
+        for exp_code in exp_codes:
+            self.logger.write(f"Creating plots for {exp_code}")
+            self.logger.increase_global_indent()
+            
+            # Create the subplot for this experiment
+            fig, axs = (plt.subplots(3, 3, sharey=True, sharex=True,
+                    figsize=(18,10)))
+            last_image=None
+            axs = axs.flatten()
+
+            # Calculate and plot the semivariograms for this experiment
+            for period_key, period_dem in dem_data[exp_code].items():
+                limb, discharge, time, exp_time = period_key
+                self.logger.write(f"Plotting {limb} {discharge} {time}")
+                assert(time == 't60')
+                ax = axs[get_ax_index(limb, discharge)]
+
+                ax.set_title(f"{limb} {discharge} {exp_time//60}hrs")
+
+                px_y, px_x = period_dem.shape
+                #ax.set_ybound(0, px_y)
+                ax.imshow(period_dem, vmin=color_min, vmax=color_max)
+                #ax.set_xlim(0, px_x)
+                #ax.set_ylim(0, px_y)
+                #plt.hist(data.flatten(), 50, normed=True)
+                #plt.xlim((120, 220))
+
+            self.logger.decrease_global_indent()
+
+            # Format the figure
+            xlabel = rf"Longitudinal distance (px)"
+            ylabel = rf"Transverse distance (px)"
+            title_str = rf"{exp_code} DEM 2m subsections with wall trim"
+            fontsize = 16
+
+            plt.tight_layout()
+            fig.subplots_adjust(top=0.9, left=0.05, bottom=0.075, right=0.95)
+            plt.xlim((0, px_x))
+            plt.ylim((0, px_y))
+            
+            # Make a title
+            plt.suptitle(title_str, fontsize=fontsize, usetex=True)
+
+            # Set common x label
+            fig.text(0.5, 0.01, xlabel, ha='center', usetex=True,
+                    fontsize=fontsize)
+
+            # Set common y label
+            fig.text(0.01, 0.5, ylabel, va='center', usetex=True,
+                    fontsize=fontsize, rotation='vertical')
+            axs[-1].set_visible(False)
+
+            # Save the figure
+            filename = filename_base.format(exp_code)
+            self.logger.write(f"Saving {filename}")
+            partial_filepath = ospath_join("dem_subplots", filename)
+            self.save_figure(partial_filepath)
+
+            #plt.show()
+
+
+    def make_dem_semivariogram_plots(self):
+        self.generic_greeting("dem semivariogram",
+                self.omnimanager.reload_dem_data,
+                self.plot_dem_semivariograms)
+
+    def plot_dem_semivariograms(self):
+        # Semivariogram are based on Curran Waters 2014
+        # Can't use the generic_plot_experiments function because of the way I 
+        # want to display and save them.
+        max_xlag = 300 #px
+        max_ylag = 50 #px
+        plot_kwargs = {
+                }
+        dem_gather_kwargs = {
+                'sta_lim'    : settings.stationing_2m,
+                'wall_trim'  : settings.dem_wall_trim,
+                }
+
+        dem_data = self.gather_dem_data(dem_gather_kwargs)
+
+        # Calculate period ranks
+        ranking = {"rising" : 0, "falling" : 1,
+                "50L" : 0, "62L" : 1, "75L" : 2, "87L" : 3, "100L" : 4}
+        get_rank = lambda l, d: d + 2*l*(4-d)
+        get_ax_index = lambda l, d: get_rank(*[ranking[k] for k in (l, d)])
+
+        # Generate a base file name
+        filename_base = f"dem_semivariograms_{{}}_{max_xlag}xlag-{max_ylag}ylag.png"
+
+        # Start plotting; 1 plot per experiment
+        exp_codes = list(dem_data.keys())
+        exp_codes.sort()
+        for exp_code in exp_codes:
+            self.logger.write(f"Creating semivariograms for {exp_code}")
+            self.logger.increase_global_indent()
+            
+            # Make buffer room for labels in fig window
+            btop    = 0.8
+            bleft   = 0.04
+            bbottom = 0.1
+            bright  = 0.985
+            figsize = self._get_figsize(max_xlag, max_ylag, 
+                    xbuffer=bleft + 1 - bright, ybuffer=bbottom + 1 - btop)
+
+            # Create the subplots for this experiment
+            fig, axs = plt.subplots(3, 3, sharey=True, sharex=True,
+                    figsize=figsize)
+            axs = axs.flatten()
+
+            # other parameters
+            last_image=None
+            levels_min, levels_max = (0,1) # contour levels min, max values
+            xlabel = rf"l_x (px)"
+            ylabel = rf"l_y (px)"
+            title_str = rf"Semivariograms for experiment {exp_code} normalized by variance ($\sigma_z^2$)"
+            fontsize = 16
+
+            # Calculate and plot the semivariograms for this experiment
+            for period_key, period_dem in dem_data[exp_code].items():
+                limb, discharge, time, exp_time = period_key
+                self.logger.write(f"Plotting {limb} {discharge} {time}")
+                assert(time == 't60')
+                ax = axs[get_ax_index(limb, discharge)]
+                ax.axis('equal')
+                ax.set_title(f"{limb} {discharge} {time}")
+
+                # Calculate semivariogram
+                x_coor, y_coor, semivariogram = self._calc_semivariogram(
+                        period_dem, max_xlag, max_ylag)
+                ## Debug code (fast data)
+                #x_coor, y_coor = np.meshgrid(np.arange(-max_xlag, max_xlag+1),
+                #                             np.arange(-max_ylag, max_ylag+1))
+
+                ## Plot semivariogram
+                levels = np.linspace(levels_min, levels_max, 40)
+                last_image = ax.contourf(x_coor, y_coor, semivariogram,
+                        levels=levels, cmap='Greys_r')
+                ## Debug code (fast data)
+                #last_image = ax.contourf(x_coor, y_coor, 
+                #        np.abs(x_coor*y_coor)/np.max(x_coor*y_coor),
+                #        levels=levels, cmap='Greys_r')
+
+            self.logger.decrease_global_indent()
+
+            # Format the figure
+            plt.tight_layout()
+            fig.subplots_adjust(top=btop, left=bleft,
+                    bottom=bbottom, right=bright)
+            if max_xlag >= max_ylag:
+                plt.ylim((-max_ylag, max_ylag))
+                plt.colorbar(last_image, orientation='horizontal',
+                        ticks=np.linspace(levels_min, levels_max, 6))
+            else:
+                plt.xlim((-max_xlag, max_xlag))
+                plt.colorbar(last_image, orientation='vertical',
+                        ticks=np.linspace(levels_min, levels_max, 6))
+            
+            # Make a title
+            plt.suptitle(title_str, fontsize=fontsize, usetex=True)
+
+            # Set common x label
+            fig.text(0.5, 0.01, xlabel, ha='center', usetex=True,
+                    fontsize=fontsize)
+
+            # Set common y label
+            fig.text(0.01, 0.5, ylabel, va='center', usetex=True,
+                    fontsize=fontsize, rotation='vertical')
+            axs[-1].set_visible(False)
+
+            # Save the figure
+            filename = filename_base.format(exp_code)
+            self.logger.write(f"Saving {filename}")
+            partial_filepath = "dem_variograms/" + filename
+            self.save_figure(partial_filepath)
+
+            break
+
+    def _calc_semivariogram(self, dem, x_pxlag_max, y_pxlag_max, normalize=True):
+        # Create a semivariogram from the dem
+        # x_pxlag_max and y_pxlag_max are the largest pixel lags to calculate
+        # Will calculate from -lag_max to +lag_max in both dimensions
+        # x is parallel to flow, y is perpendicular to flow
+        
+        nx = x_pxlag_max
+        ny = y_pxlag_max
+
+        x, y = np.meshgrid(np.arange(-nx, nx+1), np.arange(-ny, ny+1))
+        # Subset the right half (quadrants I and IV)
+        x_half = x[:, nx:]
+        y_half = y[:, nx:]
+        half_svg = np.empty_like(x_half, dtype=np.float)
+
+        iter = np.nditer([x_half, y_half, half_svg],
+                flags = ['buffered', 'multi_index'],
+                op_flags = [['readonly'], ['readonly'],
+                            ['writeonly', 'allocate', 'no_broadcast']])
+        
+        for lx, ly, v in iter:
+            # lx, ly are the lag coordinates (in pixels) of a dem element.
+            # Calculate for quadrants I and IV -ny < y < ny and 0 <= x < nx
+            # Quadrants II and III are symmetric
+            semivariance = self._calc_semivariance(dem, lx, ly)
+            v[...] = semivariance
+
+        if normalize:
+            variance = np.var(dem)
+            half_svg /= variance
+
+        # Rotate and trim the column on the y axis (x=0)
+        rot_half_svg = half_svg[::-1, :0:-1]
+        # Concatenate with the original half to create the full image
+        semivariogram = np.concatenate((rot_half_svg, half_svg), axis=1)
+
+        return x, y, semivariogram
+
+        #plt.figure()
+        #plt.hist(half_svg.flatten(), bins=40)
+        #plt.figure()
+        #plt.imshow(dem)
+        #plt.figure()
+        #levels = np.linspace(0,1,40)
+        #plt.contourf(x, y, semivariogram, levels=levels, cmap='Greys_r')
+        #plt.colorbar()
+        ##plt.imshow(half_svg)
+        #plt.show()
+        #assert(False)
+
+    def _calc_semivariance(self, dem, x_pxlag=0, y_pxlag=0):
+        # Calculate the semivariance for the given 2D lag distances
+        # dem should be an mxn numpy array. It should be oriented so upstream 
+        # is positive x.
+        # x_pxlag is the pixel lag distance parallel to the flume
+        # y_pxlag is the pixel lag distance perpendicular to the flume
+        # returns an np array of [x_pxlag, y_pxlag, semivar]
+        #
+        # x_pxlag and y_pxlag can be negative, but the semivariance function is 
+        # rotationally symmetric so it might be wasted calculations
+        #
+        # Based on equation from Curran and Waters 2014
+        # semivar (lagx, lagy) = sum[i=1 -> N-n; j=1 -> M-m] (
+        #  z(xi + lagx, yj + lagy) - z(xi, yj))**2 / (2(N-n)(M-m))
+        #
+        # Converted to:
+        # semivar (lagx, lagy) = sum(
+        # (dem[lagx, lagy subset] - dem[origin subset])**2 ) / (2(N-n)(M-m))
+
+        # Get size of dem
+        M, N = dem.shape # M = rows, N = cols
+        nx = abs(x_pxlag)
+        ny = abs(y_pxlag)
+        if ny >= M or nx >= N:
+            self.logger.write("Lag out of bounds")
+            self.logger.write([f"# rows, # columns = {M, N}",
+                f"y_pxlag, x_pxlag = {y_pxlag, x_pxlag}"], local_indent=1)
+            assert(False)
+            #return np.nan
+
+        ## Get index coordinates for offset dem subsets
+        # Can handle positive and negative lag values
+        #
+        # Calculate start and end offsets for subarray A
+        s_fu = lambda l: int((abs(l) - l) / 2)
+        e_fu = lambda l: int((abs(l) + l) / 2)
+        # Start corner of subarray A
+        sx = s_fu(x_pxlag)
+        sy = s_fu(y_pxlag)
+        # End corner of subarray A
+        ex = e_fu(x_pxlag)
+        ey = e_fu(y_pxlag)
+
+        # Get the offset dem subsets
+        # Remember, slicing is [rows, cols]
+        dem_A = dem[sy : M-ey,  sx : N-ex] # starts at origin if both lags >= 0
+        dem_B = dem[ey : M-sy,  ex : N-sx]
+        
+        # Calculate the deviation squared.
+        deviations = (dem_B - dem_A)**2
+
+        # Calculate the semivariance
+        denominator = 2 * (N - nx) * (M - ny)
+        semivar = np.sum(deviations) / denominator
+
+        #print(f"x_lag, y_lag = {x_pxlag, y_pxlag}")
+        #print(f"dem_A = dem[{sy} : {M - ey},  {sx} : {N - ex}]")
+        #print(f"dem_B = dem[{ey} : {M - sy},  {ex} : {N - sx}]")
+        #print(f"denominator = 2 * ({N - nx}) * ({M - ny}) = {denominator}")
+        #print(f"semivar = {semivar}")
+        #print()
+        #assert(False)
+
+        return semivar
+
+    def _get_figsize(self, xmax, ymax, xbuffer=0, ybuffer=0):
+        aspect_ratio = xmax / ymax
+        xbuff_ratio = (1 - xbuffer)
+        ybuff_ratio = (1 - ybuffer)
+        # largest allowed for my screen accounting for buffer
+        imgx = 19.0 * xbuff_ratio
+        imgy = 10.0 * ybuff_ratio
+        
+        # aspect corrected size
+        ax = imgy * aspect_ratio
+        ay = imgx / aspect_ratio
+
+        # pick the one that fits and correct back to full size
+        figx = (imgx if ax > imgx else ax) / xbuff_ratio
+        figy = (imgy if ay > imgy else ay) / ybuff_ratio
+
+        return (figx, figy)
+
+
     def make_dem_stats_plots(self):
-        self.logger.write([f"Making dem stats time plots..."])
-
-        indent_function = self.logger.run_indented_function
-
-        indent_function(self.omnimanager.reload_dem_data,
-                before_msg="Loading data", after_msg="Data Loaded!")
-
-        indent_function(self.plot_dem_stats,
-                before_msg=f"Plotting dem stats",
-                after_msg="Finished Plotting!")
-
-        self.logger.end_output()
+        self.generic_greeting("dem stats time",
+                self.omnimanager.reload_dem_data,
+                self.plot_dem_stats)
 
     def plot_dem_stats(self):
         # Stats are based on Curran Waters 2014
@@ -358,6 +705,7 @@ class UniversalGrapher:
         else:
             subset_str = ''
         figure_name = f"dem_{{}}_v_{filename_x}{subset_str}.png"
+        figure_name = ospath_join("dem_stats", figure_name)
 
         # Plot the 4 different stats
         for y_name in y_names:
@@ -371,6 +719,33 @@ class UniversalGrapher:
                 self._plot_dem_stats, self._format_dem_stats, 
                 dem_stats, plot_kwargs, figure_name.format(filename_y))
             self.logger.decrease_global_indent()
+
+    def _plot_dem_stats(self, exp_code, all_stats_data, plot_kwargs):
+        # Do stuff during plot loop
+        # Plot an experiment
+
+        # Not actually grouped, but can still use self.plot_group
+        stats_data = all_stats_data[exp_code]
+        self.plot_group(stats_data, plot_kwargs)
+
+    def _format_dem_stats(self, fig, axs, plot_kwargs):
+        # Format the figure after the plot loop
+        y_name = plot_kwargs['y']
+        y_labels = {
+                'mean'     : ('Mean', '(mm)'),
+                'stddev'   : ('Standard Deviation', '(mm)'),
+                'skewness' : ('Skewness', ''),
+                'kurtosis' : ('Kurtosis', ''),
+                }
+        name, units = y_labels[y_name]
+        y_label = rf"{name}" + " {units}" if units else rf"{units}"
+        fig_kwargs = {
+                'xlabel'        : r"Experiment time (hours)",
+                'ylabel'        : rf"Bed Elevation {y_label}",
+                'title'         : rf"{name} of the detrended bed surface elevations for the 2m subsection",
+                'legend_labels' : [rf"Elevation {name}"],
+                }
+        self.format_generic_figure(fig, axs, plot_kwargs, fig_kwargs)
 
     def _calc_dem_stats(self, exp_code, dem_data, kwargs={}):
         # Calculate the four different statistics from Curran Waters 2014
@@ -445,33 +820,6 @@ class UniversalGrapher:
                                 },
                 index=mindex)
         return stats_df
-
-    def _plot_dem_stats(self, exp_code, all_stats_data, plot_kwargs):
-        # Do stuff during plot loop
-        # Plot an experiment
-
-        # Not actually grouped, but can still use self.plot_group
-        stats_data = all_stats_data[exp_code]
-        self.plot_group(stats_data, plot_kwargs)
-
-    def _format_dem_stats(self, fig, axs, plot_kwargs):
-        # Format the figure after the plot loop
-        y_name = plot_kwargs['y']
-        y_labels = {
-                'mean'     : ('Mean', '(mm)'),
-                'stddev'   : ('Standard Deviation', '(mm)'),
-                'skewness' : ('Skewness', ''),
-                'kurtosis' : ('Kurtosis', ''),
-                }
-        name, units = y_labels[y_name]
-        y_label = rf"{name}" + " {units}" if units else rf"{units}"
-        fig_kwargs = {
-                'xlabel'        : r"Experiment time (hours)",
-                'ylabel'        : rf"Bed Elevation {y_label}",
-                'title'         : rf"{name} of the detrended bed surface elevations for the 2m subsection",
-                'legend_labels' : [rf"Elevation {name}"],
-                }
-        self.format_generic_figure(fig, axs, plot_kwargs, fig_kwargs)
 
 
     def make_dem_roughness_plots(self):
@@ -555,6 +903,8 @@ class UniversalGrapher:
         # exp_code = { exp_code : {(limb, flow, time) : data}}
         self.dem_data_all = {}
         self.omnimanager.apply_to_periods(self._gather_dem_data, kwargs)
+        #plt.show()
+        #assert(False)
 
         return self.dem_data_all
 
@@ -565,7 +915,7 @@ class UniversalGrapher:
         data = period.dem_data
         if data is not None:
             dem_res = settings.dem_resolution # mm/px
-            data_copy = data.copy()
+            #data_copy = data.copy()
             if 'sta_lim' in kwargs:
                 # Throw away data outside the stationing limits
                 # sta_lim = stationing for a subsection of the dem
@@ -580,16 +930,21 @@ class UniversalGrapher:
                 n_trim_rows = trim // dem_res
                 data = data[n_trim_rows:-n_trim_rows, :]
 
-            #f1 = plt.figure(1)
-            #plt.imshow(data_copy)
-            #f2 = plt.figure(2)
-            #plt.imshow(data)
-            #plt.show()
-            #input()
-            #assert(False)
-
             key = (period.limb, period.discharge, period.period_end,
                     period.exp_time_end)
+            
+            # Debugging code
+            #if exp_code == '1A':# and period.limb == 'rising' and period.discharge == '87L':
+            #    print(exp_code, key)
+            #    #f1 = plt.figure(1)
+            #    #plt.imshow(data_copy)
+            #    fig = plt.figure()
+            #    #plt.imshow(data)
+            #    plt.hist(data.flatten(), 50, normed=True)
+            #    plt.title(f"{exp_code} {key}")
+            #    plt.xlim((120, 220))
+            #    #plt.show()
+
             if exp_code in self.dem_data_all:
                 self.dem_data_all[exp_code][key] = data
             else:
@@ -2043,7 +2398,10 @@ class UniversalGrapher:
 if __name__ == "__main__":
     # Run the script
     grapher = UniversalGrapher()
-    grapher.make_dem_stats_plots()
+    #grapher.make_dem_subplots()
+    grapher.make_dem_semivariogram_plots()
+    #grapher.make_dem_stats_plots()
+    #grapher.make_dem_stats_plots()
     #grapher.make_dem_roughness_plots()
     #grapher.make_loc_shear_plots()
     #grapher.make_flume_shear_plots()
