@@ -38,7 +38,7 @@ class OmnipickleManager:
         # Save and clear out data from the omnipickle.
         # Save the experiment/period tree.
         # overwrite = {'dataset_name' : bool=False}
-        self.logger.write("Restoring Omnipickle Manager")
+        self.logger.write("Storing Omnipickle Manager")
         self.logger.increase_global_indent()
 
         self.logger.write("Saving data")
@@ -66,11 +66,19 @@ class OmnipickleManager:
         # if you change the tokens.py file, you must recreate the tree for the 
         # changes to take effect
         self.logger.write("Updating data tree definitions")
+        self.logger.increase_global_indent()
 
         for exp_code, old_experiment in self.experiments.items():
             self.experiments[exp_code] = Experiment.from_existing(old_experiment, self.logger)
 
         self.store() # save the new tree
+        self.logger.decrease_global_indent()
+
+    def _remove_datasets(self, names):
+        # Remove datasets with the given names
+        self.logger.write(["Removing datasets:"] + names)
+        for experiment in self.experiments.values():
+            experiment._remove_datasets(names)
 
     def reload_Qs_data(self, kwargs={}):
         # reload Qs data
@@ -95,6 +103,16 @@ class OmnipickleManager:
         # reload dem data
         for experiment in self.experiments.values():
             experiment.reload_dem_data(self.omniloader)
+
+    def reload_masses_data(self):
+        # reload masses data
+        for experiment in self.experiments.values():
+            experiment.reload_masses_data(self.omniloader)
+
+    def reload_sieve_data(self):
+        # reload sieve data
+        for experiment in self.experiments.values():
+            experiment.reload_sieve_data(self.omniloader)
 
 
     # Used by the Qs secondary processor.
@@ -195,6 +213,18 @@ class OmnipickleManager:
         add_dem_fu = Experiment.add_dem_data
         name = 'dem'
         self.add_generic_data(add_dem_fu, dem_pickledir, dem_data, name)
+
+    def add_masses_data(self, masses_pickledir, masses_data):
+        # Add the masses data to each experiment for extraction.
+        add_masses_fu = Experiment.add_masses_data
+        name = 'masses'
+        self.add_generic_data(add_masses_fu, masses_pickledir, masses_data, name)
+
+    def add_sieve_data(self, sieve_pickledir, sieve_data):
+        # Add the sieve data to each experiment for extraction.
+        add_sieve_fu = Experiment.add_sieve_data
+        name = 'sieve'
+        self.add_generic_data(add_sieve_fu, sieve_pickledir, sieve_data, name)
 
     
     # Attributes

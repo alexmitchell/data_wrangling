@@ -115,6 +115,7 @@ class PeriodData:
         # Calculate/extract more info
         self.step = f"{limb[0]}{self.discharge_int}L" # eg. 'f75L'
         self.period_end = self.period_range.split('-')[-1] # grab the end time str
+        self.period_end_int = int(self.period_end[1:]) # Get int of end time
         duration_fu = lambda t0, t1: int(t1[1:]) - int(t0[1:])
         self.duration = duration_fu(*self.period_range.split('-'))
         discharge_index = settings.discharge_order.index(self.step)
@@ -132,6 +133,8 @@ class PeriodData:
         get_ranking = lambda l, d, p: d + p + 2*l*(40-d)
         self.rank = get_ranking(*[period_ranking[k] for k in
                                   (self.limb, self.discharge, self.period_range)])
+
+        self.name = f"{exp_code}_{self.step}_{period_range}"
 
         # Create the data dictionary {data_name : DataSet}
         # data is wiped before storage, but can be reloaded from the 
@@ -178,6 +181,10 @@ class PeriodData:
         for dataset in self.data_dict.values():
             dataset.wipe_data()
 
+    def _remove_datasets(self, names):
+        for name in names:
+            if name in self.data_dict:
+                del self.data_dict[name]
 
     def calc_exp_time(self, partial_time=0):
         # Estimate the overall experiment time during this period.
@@ -326,8 +333,88 @@ class PeriodData:
         self._make_new_dataset('dem', dem_picklepath, kwargs)
         return ''
 
+    def add_masses_data(self, masses_picklepath, **kwargs):
+        exp_code = self.exp_code
+        #step = self.step
+        limb = self.limb
+        flow = self.discharge_int
+        period = self.period_end_int
+        period_info_str = f"{exp_code}-{self.step}-{self.period_end}"
+
+        #if (exp_code, self.step) == ('1A', 'r62L'):
+        #    print(kwargs['all_data'])
+        #    assert(False)
+
+        idx = pd.IndexSlice
+        if 'all_data' in kwargs and 'specific_data' not in kwargs:
+            # Get values to select from all_data dict {exp : masses df}
+            all_data = kwargs['all_data']
+            try:
+                data = all_data.loc[idx[limb, flow, period], :]
+            except KeyError:
+                return period_info_str
+
+        # Split samples
+        for i in 1, 2:
+            if 'generate_path' in kwargs:
+                # Picklepath is actually the pickle dir
+                pkl_filename = f"{period_info_str}_masses-s{i}.pkl"
+                m_picklepath = pjoin(masses_picklepath, pkl_filename)
+
+            name = f"Sample {i}"
+            sample = data.loc[:, idx[('Total wet', name), :]]
+            sample.columns = sample.columns.droplevel('Sample')
+            non_dry_tot = sample.columns != "total wet (kg)"
+
+            if sample.loc[:, non_dry_tot].isnull().all().all():
+                # Ignore sample if null
+                continue
+            else:
+                kwargs['specific_data'] = sample
+                self._make_new_dataset(f"masses-s{i}",
+                        m_picklepath, kwargs)
+        return ''
+
+    def add_sieve_data(self, sieve_picklepath, **kwargs):
+        exp_code = self.exp_code
+        limb = self.limb
+        flow = self.discharge_int
+        period = self.period_end_int
+        period_info_str = f"{exp_code}-{self.step}-{self.period_end}"
+
+        idx = pd.IndexSlice
+        if 'all_data' in kwargs and 'specific_data' not in kwargs:
+            # Get values to select from all_data dict {exp : sieve df}
+            all_data = kwargs['all_data']
+            #print(period_info_str)
+            try:
+                data = all_data.loc[idx[limb, flow, period], :]
+            except KeyError:
+                return period_info_str
+
+        ## Cleaning up after a mistake
+        #for i in data.index.values:
+        #    print(f"{exp_code} removing sieve-s{i}")
+        #    self._remove_datasets([f"sieve-s{i}"])
+        #print(self.data_dict.keys())
+
+        # Split samples
+        for i in data.index.get_level_values('sample'):
+            if 'generate_path' in kwargs:
+                # Picklepath is actually the pickle dir
+                pkl_filename = f"{period_info_str}_sieve-s{i}.pkl"
+                picklepath = pjoin(sieve_picklepath, pkl_filename)
+
+            kwargs['specific_data'] = data.loc[i, :]
+            self._make_new_dataset(f"sieve-s{i}", picklepath, kwargs)
+        return ''
+
 
     # Reloading
+    def reload_generic(self, loader, name):
+        if name in self.data_dict:
+            self.data_dict[name].reload_data(loader)
+
     def reload_Qs_data(self, loader):
         # Loads the most up to date version of the Qs pickle
         self._Qs_dataset.reload_data(loader)
@@ -348,6 +435,17 @@ class PeriodData:
         # Loads the dem data
         if 'dem' in self.data_dict:
             self.data_dict['dem'].reload_data(loader)
+
+    def reload_masses_data(self, loader):
+        # Loads the dem data
+        for i in 1, 2:
+            name = f"masses-s{i}"
+            if name in self.data_dict:
+                self.data_dict[name].reload_data(loader)
+
+    def reload_sieve_data(self, loader):
+        # Loads the sieve data
+        for i in 1, 2: self.reload_generic(loader, f"sieve-s{i}")
 
     
     # Attributes
@@ -393,6 +491,43 @@ class PeriodData:
             return self.data_dict['dem'].data
         except KeyError:
             return None
+
+    @property
+    def masses_data(self):
+        s1 = 'masses-s1'
+        s2 = 'masses-s2'
+        ddict = self.data_dict
+        if s1 in ddict and s2 in ddict:
+            # Add the two subsamples together to get a larger subsample and 
+            # more accurately calculate dry mass
+            data = ddict[s1].data + ddict[s2].data
+            data['total wet (kg)'] = ddict[s1].data['total wet (kg)']
+            data['mass ratio'] = data['subset dry (kg)'] / data['subset wet (kg)']
+            data['total dry (kg)'] = data['mass ratio'] * data['total wet (kg)']
+        elif s1 in ddict and s2 not in ddict:
+            data = ddict[s1].data
+        elif s1 not in ddict and s2 in ddict:
+            data = ddict[s2].data
+        else:
+            return None
+        return data
+
+    @property
+    def sieve_data(self):
+        s1 = 'sieve-s1'
+        s2 = 'sieve-s2'
+        ddict = self.data_dict
+        if s1 in ddict and s2 in ddict:
+            # Add the two subsamples together to get a larger subsample and a 
+            # likely more accurate gsd
+            data = ddict[s1].data + ddict[s2].data
+        elif s1 in ddict and s2 not in ddict:
+            data = ddict[s1].data
+        elif s1 not in ddict and s2 in ddict:
+            data = ddict[s2].data
+        else:
+            data = None
+        return data
 
 
     # Processing
@@ -491,6 +626,20 @@ class Experiment:
                   'generate_path' : True}
         return self.add_generic_data(period_fu, **kwargs)
 
+    def add_masses_data(self, masses_pickledir, masses_data):
+        period_fu = PeriodData.add_masses_data
+        kwargs = {'masses_picklepath': masses_pickledir,
+                  'all_data'      : masses_data[self.code],
+                  'generate_path' : True}
+        return self.add_generic_data(period_fu, **kwargs)
+
+    def add_sieve_data(self, sieve_pickledir, sieve_data):
+        period_fu = PeriodData.add_sieve_data
+        kwargs = {'sieve_picklepath': sieve_pickledir,
+                  'all_data'      : sieve_data[self.code],
+                  'generate_path' : True}
+        return self.add_generic_data(period_fu, **kwargs)
+
     
     # Processing
     def apply_period_function(self, fu, kwargs={}):
@@ -547,6 +696,11 @@ class Experiment:
             period_data.wipe_data()
         self.accumulated_data = None
 
+    def _remove_datasets(self, names):
+        # Remove datasets with the given names
+        for period_data in self.periods.values():
+            period_data._remove_datasets(names)
+
     
     # Loading
     def reload_Qs_data(self, loader):
@@ -569,5 +723,15 @@ class Experiment:
         # Load dem data from pickles.
         for period_data in self.periods.values():
             period_data.reload_dem_data(loader)
+
+    def reload_masses_data(self, loader):
+        # Load masses data from pickles.
+        for period_data in self.periods.values():
+            period_data.reload_masses_data(loader)
+
+    def reload_sieve_data(self, loader):
+        # Load sieve data from pickles.
+        for period_data in self.periods.values():
+            period_data.reload_sieve_data(loader)
 
 

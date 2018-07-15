@@ -7,10 +7,15 @@
 #
 # Qs# pickles are panda dataframes directly translated from the raw txt files
 
+import matplotlib
+import matplotlib.pyplot as plt
 import os
+from os.path import join as pjoin
 import numpy as np
 import pandas as pd
 from time import asctime
+from time import sleep
+
 
 # From Helpyr
 from data_loading import DataLoader
@@ -22,15 +27,17 @@ from helpyr_misc import exclude_df_cols
 
 from omnipickle_manager import OmnipickleManager
 
+import global_settings as settings
+
 # Primary Pickle Processor takes raw Qs and Qsn pickles and condenses them into 
 # one Qs pickle for each period. ie. Does processing within each period.
 
 # Secondary Pickle Processor figures out the relationship between period 
 # pickles. Finds missing periods and accumulated time.
 
-# These could have been combined into one processor, but I happened to write 
-# the secondary for a separate analysis and thought it would be better to 
-# include here.
+# Tertiary Pickle Processor checks the lighttable data relative to other data. 
+# eg. scale the data using the sieve data. Requires running other programs 
+# first.
 
 
 # To do:
@@ -46,17 +53,22 @@ class PrimaryPickleProcessor:
     # 4) combine qs dataframes
     # 5) error check combined qs dataframe
 
+    # Note: The primary processor uses attribute data (eg. self.variable) to 
+    # get information into functions rather than repetitively pass a list of 
+    # arguments. In retrospect, kwargs may have been a better choice because 
+    # using attribute variables that update every iteration of a for loop makes 
+    # it hard to follow in such a large class.
     error_codes = {
             'CQF' : "Conflicting Qs files",
             'NDF' : "No Data Found",
             'MMD' : "Mismatched Data",
             }
 
-    def __init__(self, root_dir, output_txt=False):
+    def __init__(self, output_txt=False):
         # File locations
-        self.root_dir = root_dir
-        self.pickle_source = f"{self.root_dir}/raw-pickles"
-        self.pickle_destination = f"{self.root_dir}/primary-processed-pickles"
+        self.root_dir = settings.root_dir
+        self.pickle_source = settings.Qs_raw_pickels
+        self.pickle_destination = settings.Qs_primary_pickles
         self.txt_destination = f"{self.root_dir}/combined-txts"
         self.log_filepath = "./log-files/Qs_primary_processor.txt"
         self.metapickle_name = "Qs_metapickle"
@@ -169,6 +181,7 @@ class PrimaryPickleProcessor:
                         before_msg="Writing combined txt file...",
                         after_msg="Done writing file!")
 
+
     def load_data(self):
         # Load the sorted list of paths for this period
         self.Qs_path_list = self.metapickle[self.current_period_path]
@@ -190,6 +203,7 @@ class PrimaryPickleProcessor:
                 self.Qsn_data.append(bedload_data)
                 self.Qsn_names.append(Qs_name)
 
+
     def primary_error_check(self):
         # 3) error check raw qs dataframes
         #   - conflict between qs and qs#?
@@ -201,6 +215,7 @@ class PrimaryPickleProcessor:
                 "Qs.txt and Qs#.txt files both exist",
                f"Qs#.txt: {name_list}"])
             self.lingering_errors.append(error_msg)
+
 
     def combine_Qsn_chunks(self):
         # 4) combine qs dataframes
@@ -269,11 +284,52 @@ class PrimaryPickleProcessor:
             pd_like.loc[:, column] = like_df.loc[:, column]
         return pd_like
 
+
     def secondary_error_check(self):
         # 5) error check combined qs dataframe
         
         self.final_output = None
 
+        ## Check for diff between raw_Qs and Qs_combined
+        self._check_diff_raw_combined()
+
+        ## Set rows with any Nan values to entirely Nan values
+        nan_rows = self.final_output.isnull().any(axis=1)
+        self.final_output.loc[nan_rows, 'missing ratio':] = np.nan
+
+        ## Set outliers to Nan
+        max_threshold = settings.lighttable_bedload_cutoff
+        trim_rows = self.final_output['Bedload all'] > max_threshold
+        trim_count = np.sum(trim_rows)
+        if trim_count > 0:
+            trim_vals = self.final_output.loc[trim_rows, 'Bedload all']
+            str_trim_vals = [f'{v:0.2f}' for v in np.sort(trim_vals.values)]
+            trim_sum = np.sum(trim_vals)
+            total_sum = np.sum(self.final_output['Bedload all'])
+
+            self.final_output.loc[trim_rows, 'missing ratio':] = np.nan
+
+            self.logger.write([
+                    f"{trim_count} points are above the cutoff value of {max_threshold}" +
+                    f" ({trim_sum/1000:0.3f} kg of {total_sum/1000:0.3f} kg; " +
+                    f"{trim_sum/total_sum:0.2%} )",
+                    f"{list(str_trim_vals)}"])
+
+            #self.final_output.hist(column='Bedload all', bins=50)
+            #plt.show()
+        else:
+            self.logger.write("No values needed to be trimmed")
+
+        ## Deal with special cases
+        self._check_special_cases()
+
+        ## Check for accumulated overlap
+        self._check_accumulated_overlap()
+
+        ## Check for total number of rows
+        self._fix_n_rows()
+
+    def _check_diff_raw_combined(self):
         # Check for diff between raw_Qs and Qs_combined
         raw_Qs = self.Qs0_data
         raw_exists = raw_Qs is not None
@@ -290,19 +346,6 @@ class PrimaryPickleProcessor:
             self.final_output = raw_Qs if raw_exists else combined_Qs
             self.logger.write(f"Only {using} found." +
                               "No difference check needed.")
-
-        # Set rows with any Nan values to entirely Nan values
-        nan_rows = self.final_output.isnull().any(axis=1)
-        self.final_output.loc[nan_rows, 1:] = np.nan
-
-        # Check for accumulated overlap
-        overlap = self.accumulating_overlap
-        if combined_exists and overlap.any():
-            overlap_times = self.combined_Qs.loc[overlap,'timestamp']
-            str_overlap_times = overlap_times.to_string(float_format="%f")
-
-            self.logger.write(["The following timestamps were overlapped: "])
-            self.logger.write(str_overlap_times.split('\n'), local_indent=1)
 
     def _difference_check(self):
         # Look at the difference between the Qs.txt and Qs combined data.
@@ -362,6 +405,188 @@ class PrimaryPickleProcessor:
             self.logger.write(["Qs.txt matches combined Qs chunk data",
                               "(Excluding velocity columns and missing ratio)"])
             self.final_output = combined_Qs
+
+    def _check_accumulated_overlap(self):
+        # Check for accumulated overlap
+        combined_exists = self.combined_Qs is not None
+        overlap = self.accumulating_overlap
+        if combined_exists and overlap.any():
+            overlap_times = self.combined_Qs.loc[overlap,'timestamp']
+            str_overlap_times = overlap_times.to_string(float_format="%f")
+
+            self.logger.write(["The following timestamps were overlapped: "])
+            self.logger.write(str_overlap_times.split('\n'), local_indent=1)
+
+    def _check_special_cases(self):
+        _, experiment, step, rperiod = nsplit(self.current_period_path, 3)
+        period = rperiod[8:]
+
+        # Deal with special cases
+        # See analysis_notes.txt for more info
+        special_case = ('1A', 'rising-62L', 't40-t60')
+        if special_case == (experiment, step, period):
+            self.logger.write(f"Addressing special case {special_case}")
+            # delete several chunks of bad data from the text file
+            # Longer chunk may be from pausing the lighttable program, shorter 
+            # chunks may be due to low frame rate
+            #
+            # Delete in reverse order (lastest first) so line numbers don't 
+            # shift for the next deletion.
+            self.final_output = self._delete_chunk(1631, 1638, self.final_output)
+            self.final_output = self._delete_chunk(726, 1076, self.final_output)
+            self.final_output = self._delete_chunk(709, 714, self.final_output)
+            self.final_output = self._delete_chunk(622, 703, self.final_output)
+            self.final_output = self._delete_chunk(548, 561, self.final_output)
+            self.final_output = self._delete_chunk(494, 526, self.final_output)
+            self.final_output = self._delete_chunk(412, 417, self.final_output)
+            self.final_output = self._delete_chunk(390, 397, self.final_output)
+
+        special_case = ('2A', 'rising-50L', 't00-t60')
+        if special_case == (experiment, step, period):
+            self.logger.write(f"Addressing special case {special_case}")
+            # delete lines 1343 to 3916 from the text file
+            # Appears that I forgot to stop the lighttable program when pausing 
+            # the flow to clean out the trap
+            self.final_output = self._delete_chunk(1343, 3916, self.final_output)
+
+        special_case = ('3A', 'rising-75L', 't00-t20')
+        if special_case == (experiment, step, period):
+            print(f"Addressing special case {special_case}")
+            # delete lines 925 to 2368 from the text file
+            # Appears that I forgot to stop the lighttable program when pausing 
+            # the flow to clean out the trap
+            self.final_output = self._delete_chunk(925, 2368, self.final_output)
+
+        special_cases = [
+                # These special cases appear to have high variability from the 
+                # graphs
+                ('1B', 'rising-62L', 't20-t40'),
+                ('1B', 'rising-62L', 't40-t60'),
+                ('2A', 'rising-87L', 't00-t20'),
+                ('2A', 'rising-87L', 't20-t40'),
+                ('2B', 'falling-87L', 't00-t20'),
+                ('2B', 'falling-87L', 't20-t40'),
+                ('2B', 'falling-87L', 't40-t60'),
+                ('2B', 'falling-75L', 't00-t20'),
+                ('2B', 'falling-75L', 't20-t40'),
+                ('2B', 'falling-75L', 't40-t60'),
+                ('3A', 'falling-87L', 't00-t20'),
+                ('3A', 'falling-87L', 't20-t40'),
+                ('3A', 'falling-87L', 't40-t60'),
+                ('5A', 'rising-62L', 't00-t20'),
+                ('5A', 'rising-62L', 't20-t40'),
+                ('5A', 'rising-75', 't00-t20'),
+                ]
+        if (experiment, step, period) in special_cases:
+            self.logger.write_blankline(2)
+            self.logger.write(f"Suspicious case {(experiment, step, period)}")
+            self.logger.write_blankline(2)
+            sleep(3)
+            #assert(False)
+
+    def _delete_chunk(self, fstart, fend, data):
+        # For ease of use, fstart and fend are the line numbers in the 
+        # combined Qs file. The data between those lines (inclusive) will 
+        # be deleted and the timestamps reset to remove any gap
+        start, end = fstart-2, fend-2
+        self.logger.write(f"Deleting data lines {start} through {end}.")
+
+        # Delete the lines
+        index = data.index
+        output = data[(index < start) | (end < index)]
+
+        # Fix timestamps and indices
+        # Note, using the values method gets references to the underlying 
+        # data locations. Therefore I can change them without setting of a 
+        # copy warnings.
+        output.loc[:, 'timestamp'].values[start:] -= end - start + 1
+        output.set_index('timestamp', inplace=True)
+        output.reset_index(inplace=True)
+
+        return output
+
+    def _fix_n_rows(self):
+        # Check for total number of rows
+        # eg. trim to 1200 rows for a 20 minute period (1 row / sec)
+        _, experiment, step, rperiod = nsplit(self.current_period_path, 3)
+        period = rperiod[8:]
+
+        start, end = [int(t[1:]) for t in period.split(sep='-')]
+        target_n_rows = abs(end - start) * 60 # one row per second
+        n_rows, ncols = self.final_output.shape
+
+        def check_if_extra(row_idx):
+            row = self.final_output.iloc[row_idx, :]
+            empty = row.isnull().any()
+            zero = (row[['Bedload all', 'Count all']] == 0).all()
+            return empty or zero
+
+        # Delete extra lines from end
+        while n_rows > target_n_rows and check_if_extra(-1):
+            self.final_output = self.final_output.iloc[:-1, :]
+            n_rows, ncols = self.final_output.shape
+            self.logger.write(f"Dropping last row (new n_rows = {n_rows})")
+
+        # Delete extra lines from beginning
+        while n_rows > target_n_rows and check_if_extra(0):
+            self.final_output = self.final_output.iloc[1:, :]
+            n_rows, ncols = self.final_output.shape
+            self.logger.write(f"Dropping first row (new n_rows = {n_rows})")
+
+        # Add or delete rows
+        n_rows, ncols = self.final_output.shape
+        if n_rows > target_n_rows:
+            # Delete data from head (~25%) and tail (~75%) to reach desired # 
+            # of rows
+            n_drop = n_rows - target_n_rows
+            self.logger.write(f"Need to drop {n_drop} rows containing data")
+            head_drop = n_drop // 4
+            tail_drop = n_drop - head_drop
+
+            total_mass = self.final_output.loc[:, 'Bedload all'].sum()
+            head = self.final_output.iloc[0:head_drop, :]
+            tail = self.final_output.iloc[-tail_drop:, :]
+            self.final_output = self.final_output.iloc[head_drop:-tail_drop, :]
+            self.previous_tail = tail
+
+            head_mass = head.loc[:, 'Bedload all'].sum()
+            tail_mass = tail.loc[:, 'Bedload all'].sum()
+            loss_ratio = (head_mass + tail_mass) / total_mass
+            self.logger.write([
+                f"Dropping {head_drop}s ({head_mass:0.2f}g) from head.",
+                f"Dropping {tail_drop}s ({tail_mass:0.2f}g) from tail",
+                f"Original total mass = {total_mass:0.2f}g ({loss_ratio:0.2%} trimmed)"])
+            if 0.04 < loss_ratio <= 0.05:
+                self.logger.write_blankline(2)
+                self.logger.write(f"###  {loss_ratio:0.2%} is high!  ###")
+                self.logger.write_blankline(2)
+                sleep(4)
+            elif 0.05 < loss_ratio:
+                self.logger.write_blankline(2)
+                self.logger.write(f"###  {loss_ratio:0.2%} is above tolerance!  ###")
+                self.logger.write_blankline(2)
+                assert(False)
+
+        elif n_rows < target_n_rows:
+            n_needed = target_n_rows - n_rows
+            self.logger.write(f"Too few rows. Adding {n_needed} blank rows.")
+            last_row = self.final_output.iloc[-1, :]
+            last_timestamp = last_row['timestamp']
+            n_cols  = last_row.shape[0]
+
+            needed_range = np.arange(n_needed)
+
+            np_empty = np.empty((n_needed, n_cols))
+            np_empty.fill(np.nan)
+            np_empty[:,0] = (needed_range + 1 + last_timestamp).T
+            pd_empty = pd.DataFrame(np_empty,
+                columns=last_row.index, index=needed_range + n_rows)
+            self.final_output = pd.concat([self.final_output, pd_empty])
+
+        n_rows, ncols = self.final_output.shape
+        self.logger.write(f"Final number of rows = {n_rows}")
+
+
     def calculate_stats(self):
         # Calc column averages and sums
         name = self.pkl_name
@@ -441,11 +666,11 @@ class PrimaryPickleProcessor:
 
 class SecondaryPickleProcessor:
 
-    def __init__(self, root_dir):
+    def __init__(self):
         # File locations
-        self.root_dir = root_dir
-        self.pickle_source = f"{self.root_dir}/primary-processed-pickles"
-        self.pickle_destination = f"{self.root_dir}/secondary-processed-pickles"
+        self.root_dir = settings.root_dir
+        self.pickle_source = settings.Qs_primary_pickles
+        self.pickle_destination = settings.Qs_secondary_pickles
         self.log_filepath = "./log-files/Qs_secondary_processor.txt"
         
         # Start up logger
@@ -497,7 +722,6 @@ class SecondaryPickleProcessor:
     def save_pickles(self):
         #self.omnimanager.Qs_finish_secondary_pickles(self.pickle_destination)
         self.omnimanager.store(overwrite={'Qs-secondary' : True})
-
 
     # Functions that operate "within" an Experiment or PeriodData object
     # Could be in part of those class defs, but I want them to be more like 
@@ -601,11 +825,52 @@ class SecondaryPickleProcessor:
         return gap * 60 # return gap in seconds
 
 
+class TertiaryPickleProcessor:
+
+    def __init__(self, root_dir):
+        # File locations
+        self.root_dir = settings.lighttable_data_dir
+        self.pickle_source = settings.Qs_secondary_pickles
+        self.pickle_destination = settings.Qs_tertiary_pickles
+        self.log_filepath = "./log-files/Qs_tertiary_processor.txt"
+        omnipickle_path = settings.omnipickle_path
+        
+        # Start up logger
+        self.logger = Logger(self.log_filepath, default_verbose=True)
+        ensure_dir_exists(self.pickle_destination, self.logger)
+        self.logger.write(["Begin Tertiary Pickle Processor output", asctime()])
+
+        # Start up loader
+        self.loader = DataLoader(self.pickle_source, 
+                self.pickle_destination, self.logger)
+        
+        # Reload omnimanager
+        self.omnimanager = OmnipickleManager(self.logger)
+        self.omnimanager.restore()
+        self.omnimanager.update_tree_definitions()
+
+    def run(self):
+        self.logger.write(["Running tertiary pickle processor..."])
+        indent_function = self.logger.run_indented_function
+
+        # Remove large values based on frame rates
+
+        # Scale data from the sieve data
+
+        #    indent_function(self.write_stats_txt, before_msg="Writing 
+        #    statistics txt",
+        #            after_msg="Done!")
+
+        self.logger.end_output()
+
+
+
+
 
 if __name__ == "__main__":
     # Run the script
     root_dir = "/home/alex/feed-timing/data/extracted-lighttable-results"
-    primary = PrimaryPickleProcessor(root_dir, output_txt=True)
+    primary = PrimaryPickleProcessor(output_txt=True)
     primary.run()
-    secondary = SecondaryPickleProcessor(root_dir)
+    secondary = SecondaryPickleProcessor()
     secondary.run()

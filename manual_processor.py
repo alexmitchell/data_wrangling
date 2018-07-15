@@ -39,7 +39,6 @@ class ManualProcessor:
         # Reload omnimanager
         self.omnimanager = OmnipickleManager(self.logger)
         self.omnimanager.restore()
-        self.logger.write("Updating experiment definitions")
         self.omnimanager.update_tree_definitions()
 
     def run(self):
@@ -63,26 +62,349 @@ class ManualProcessor:
         self.logger.write("")
         crawler = Crawler(logger=self.logger)
         crawler.set_root(self.root)
-        self.depth_xlsx_filepaths = crawler.get_target_files(
-                "??-flow-depths.xlsx", verbose_file_list=True)
-        #self.masses-_xlsx_filepaths = crawler.get_target_files(
-        #        "??-masses.xlsx", verbose_file_list=False)
+        
         # example filename: 3B-flow-depths.xlsx  3B-masses.xlsx
+        #self.depth_xlsx_filepaths = crawler.get_target_files(
+        #        "??-flow-depths.xlsx", verbose_file_list=True)
+        #self.masses_xlsx_filepaths = crawler.get_target_files(
+        #        "??-masses.xlsx", verbose_file_list=True)
+
+        # Filenames for sieve data do not have a unique key word. Grab all 
+        # excel files in the SampleSieveData directory
+        self.sieve_xlsx_filepaths = crawler.get_target_files(
+                target_names="*.xlsx",
+                target_dirs="SampleSieveData",
+                verbose_file_list=False)
+
         crawler.end()
 
     def load_data(self):
         # Load all the manual data files and combine
         indent_function = self.logger.run_indented_function
 
-        self.all_depth_data = {}
-        indent_function(self._load_depth_xlsx,
-                before_msg="Loading depth data", after_msg="Depth data extraction complete")
+        self.all_depth_data = {} # {exp_code : dataframe}
+        #indent_function(self._load_depth_xlsx,
+        #        before_msg="Loading depth data", after_msg="Depth data 
+        #        extraction complete")
 
+        self.all_masses_data = {} # {exp_code : dataframe}
         #indent_function(self._load_masses_xlsx,
-        #        before_msg="Loading mass data", after_msg="Mass data extraction complete")
+        #        before_msg="Loading mass data...",
+        #        after_msg="Finished loading mass data!")
 
-        #indent_function(self._load_sieve_xlsx,
-        #        before_msg="Loading sieve data", after_msg="Sieve data extraction complete")
+        self.all_sieve_data = {} # {exp_code : dataframe}
+        indent_function(self._load_sieve_xlsx,
+                before_msg="Loading sieve data...",
+                after_msg="Finished loading sieve data!")
+
+    def _load_sieve_xlsx(self):
+        kwargs = {
+                'sheetname'  : 'Clean',
+                'header'     : 0,
+                'skiprows'   : 5,
+                'skip_footer': 3,
+                'index_col'  : None,
+                'parse_cols' : 'A:B',
+                }
+
+        #self.logger.write("Removing old references")
+        #self.omnimanager._remove_datasets([f"sieve-s{i}" for i in (1,2)])
+
+        sieve_data = {}
+        for sieve_filepath in self.sieve_xlsx_filepaths:
+
+            ### Extract experiment from filepath
+            # example filename: 3B-sieves.xlsx
+            # One file per experiment
+            sieve_path, sieve_filename = psplit(sieve_filepath)
+            parts = (sieve_filename.split('.')[0]).split('_')
+
+            if 'feed' in sieve_filename:
+                self.logger.write(f"Skipping feed sample {sieve_filename}.")
+                continue
+
+            exp_code, step = parts[0:2]
+            ptime = int(''.join(c for c in parts[2] if c.isdigit()))
+
+            if len(parts) == 3:
+                # No sample label, assume sample 1
+                #print('Sample 1: ', parts)
+                sample = 1
+            elif '1' in parts[3]:
+                #print('Sample 1: ', parts)
+                sample = 1
+            elif '2' in parts[3]:
+                #print('Sample 2: ', parts)
+                sample = 2
+            elif '75acc' == parts[3]:
+                #print('Sample 1: ', parts, 'Special case')
+                sample = 1
+            else:
+                print('Unhandled case')
+                print(parts)
+                assert(False)
+
+            meta_kwargs = {
+                    'exp_code' : exp_code,
+                    'step'     : step,
+                    'ptime'    : ptime,
+                    'sample'   : sample,
+                    }
+
+            self.logger.write(f"Extracting {sieve_filename}")
+
+            # Read and prep raw data
+            data = self.loader.load_xlsx(sieve_filepath, kwargs, add_path=False)
+            data = self._reformat_sieve_data(data, **meta_kwargs)
+
+            if exp_code in sieve_data:
+                sieve_data[exp_code].append(data)
+            else:
+                sieve_data[exp_code] = [data]
+
+        for exp_code, frames in sieve_data.items():
+            combined_data = pd.concat(frames)
+            self.all_sieve_data[exp_code] = combined_data.sort_index()
+
+    def _reformat_sieve_data(self, data, **kwargs):
+        # Clean up the data by providing experiment timestamps, sorting, and 
+        # fixing zero values.
+        # kwargs must have exp_code, step, ptime, and sample variables
+        self.logger.write("Reformatting data")
+
+        exp_code = kwargs['exp_code']
+        step = kwargs['step']
+        limb = 'rising' if step[0] == 'r' else 'falling'
+        discharge = int(''.join(c for c in step if c.isdigit()))
+        ptime = kwargs['ptime']
+        sample = kwargs['sample']
+
+        # Rename column labels and names
+        data.columns = ['size (mm)', 'mass (g)']
+
+        # Shift sizes so it represents pass through rather than retained
+        pan_index = data['size (mm)'] == 'pan'
+        pan = data.loc[pan_index, 'mass (g)'].iloc[0]
+        data['size (mm)'].values[1:] = data['size (mm)'].values[:-1]
+
+        # Identify rows outside of the acceptable size range
+        sizes = data['size (mm)']
+        outside = (sizes < 0.5) | (64 <= sizes)
+
+        outside_data = data.loc[outside & ~pan_index, 'mass (g)']
+        if (outside_data.notnull() & (outside_data != 0)).any():
+            print('Impossible masses found')
+            print(f"{exp_code} {step} {ptime}")
+            print(data)
+            assert(False)
+
+        # Remove >= 64 because they are impossible
+        # Remove < 0.5 because they are not measured, but keep pan
+        data.drop(data.index[outside], inplace=True)
+        # set 45mm (0th item) to 0g if it is nan
+        data.iloc[0, 1] = 0 if np.isnan(data.iloc[0,1]) else data.iloc[0,1]
+        # replace the pan value
+        data.iloc[-1, 1] = pan
+
+        # Because the files do not use the same # decimals for the sizes,
+        # hardcode a consistent size column
+        data['size (mm)'] = np.array([
+            45, 32, 22.3, 16, 11.2, 8, 5.66,
+            4, 2.83, 2, 1.41, 1, 0.71, 0.5])
+
+        # Transpose and sort
+        data.set_index('size (mm)', inplace=True)
+        data = (data.T).sort_index(axis=1)
+
+        # Add a multiindex to the rows
+        key = limb, discharge, ptime, sample
+        key_names = 'limb', 'discharge', 'time', 'sample'
+        data.index = pd.MultiIndex.from_tuples([key], names=key_names)
+
+        # Add a new level providing the experiment time
+        def _get_exp_time(args):
+            limb, discharge, period_time, _ = args
+            weights = {'rising'  : 0,
+                       'falling' : 1,
+                       50  : 0,
+                       62  : 1,
+                       75  : 2,
+                       87  : 3,
+                       100 : 4
+                      }
+            w_Qmax = weights[100]
+            w_limb = weights[limb]
+            w_Q = weights[discharge]
+            order = w_Q  + 2 * w_limb * (w_Qmax - w_Q)
+            try:
+                p_time = int(period_time)
+            except ValueError:
+                p_time = 60
+            exp_time = order * 60 + p_time
+            return exp_time
+        name = 'exp_time'
+        data[name] = data.index
+        data[name] = data[name].map(_get_exp_time)
+        data.set_index('exp_time', append=True, inplace=True)
+
+        #if (exp_code, step, ptime) == ('3B', 'r62', 60):
+        #    print(data)
+        #    assert(False)
+
+        # Check to make sure the data is numeric
+        try:
+            assert((data.dtypes == np.float64).all())
+        except AssertionError:
+            print(data)
+            print("Data is not all float64")
+            #print(data.apply(pd.to_numeric))
+            #print(data.apply(pd.to_numeric).dtypes)
+            raise
+
+        return data
+
+
+    def _load_masses_xlsx(self):
+        kwargs = {
+                'sheetname'  : 'Sheet1',
+                'header'     : [0,1],
+                'skiprows'   : 0,
+                'index_col'  : [0, 1, 2],
+                'parse_cols' : 'B:M',
+                'na_values'  : ['#DIV/0!', '#VALUE!'],
+                'skip_footer': 4,
+                }
+
+        self.logger.write("Removing old references")
+        self.omnimanager._remove_datasets([f"masses-s{i}" for i in (1,2)])
+
+        masses_data = {}
+        for masses_filepath in self.masses_xlsx_filepaths:
+
+            ### Extract experiment from filepath
+            # example filename: 3B-massess.xlsx
+            # One file per experiment
+            masses_path, masses_filename = psplit(masses_filepath)
+            exp_code, source_str = masses_filename.split('-', 1)
+
+            self.logger.write(f"Extracting {masses_filename}")
+
+            # Read and prep raw data
+            data = self.loader.load_xlsx(masses_filepath, kwargs, add_path=False)
+            #try:
+            #    data = self.loader.load_xlsx(masses_filepath, kwargs, add_path=False)
+            #except XLRDError:
+            #    kwargs['sheetname'] = 'All'
+            #    data = self.loader.load_xlsx(masses_filepath, kwargs, add_path=False)
+            #    kwargs['sheetname'] = 'Sheet1'
+            data = self._reformat_masses_data(data)
+
+            self.all_masses_data[exp_code] = data
+
+    def _reformat_masses_data(self, data):
+        # Clean up the data by providing experiment timestamps, sorting, and 
+        # fixing zero values.
+        self.logger.write("Reformatting data")
+
+        # Rename index names
+        new_names = ['limb', 'discharge', 'period_time']
+        data.index.names = new_names
+        
+        # Rename column labels and names
+        # Add spaces between name and (kg)
+        def add_space(s):
+            if '(kg)' in s:
+                i = s.rindex('(kg)')
+                s = s[:i] + ('' if s[i-1] == ' ' else ' ') + s[i:]
+            return s
+        primary = ['Total wet'] + ['Sample 1'] * 4 + ['Sample 2'] * 4
+        secondary = [add_space(c) for c in list(data.columns.get_level_values(1))]
+        columns = pd.MultiIndex.from_tuples(list(zip(primary, secondary)),
+                names=['Sample', 'Measurement'])
+        data.columns = columns
+
+        # Delete 'Total' rows (ie. 'Total' in period_time level)
+        # They are duplicate data and makes slicing a pain in the butt
+        data.drop(labels='Total', level='period_time', inplace=True)
+
+        # Add a new level providing the experiment time
+        def _get_exp_time(args):
+            limb, discharge, period_time = args
+            weights = {'rising'  : 0,
+                       'falling' : 1,
+                       50  : 0,
+                       62  : 1,
+                       75  : 2,
+                       87  : 3,
+                       100 : 4
+                      }
+            w_Qmax = weights[100]
+            w_limb = weights[limb]
+            w_Q = weights[discharge]
+            order = w_Q  + 2 * w_limb * (w_Qmax - w_Q)
+            try:
+                p_time = int(period_time)
+            except ValueError:
+                p_time = 60
+            exp_time = order * 60 + p_time
+            return exp_time
+        name = 'exp_time'
+        data[name] = data.index
+        data[name] = data[name].map(_get_exp_time)
+
+        #data.sort_values(by=name, inplace=True)
+        data.set_index(name, append=True, inplace=True)
+        #data.reset_index(col_level=1, col_fill='meta', inplace=True)
+        #data.set_index(name, inplace=True)
+        #data.sort_index(axis=0, level='exp_time', inplace=True)
+        data.sort_index(axis=0, inplace=True)
+        data.sort_index(axis=1, inplace=True)
+
+        # Fix 0 values where appropriate
+        idx = pd.IndexSlice
+        tot_wet = data.loc[: , idx['Total wet', 'total wet (kg)']]
+        for sample in 'Sample 1', 'Sample 2',:
+            if (data == 0).any().any():
+                # None of the values should be zero
+                # Just crash it for manual inspection
+                self.logger.write('Zero value found! Crashing!')
+                print(data)
+                assert(False)
+            wet = data.loc[: , idx[sample, 'subset wet (kg)']]
+            dry = data.loc[: , idx[sample, 'subset dry (kg)']]
+            tot_dry = data.loc[: , idx[sample, 'total dry (kg)']]
+
+            zero_subset_rows = (wet == 0) | (dry == 0)
+            null_subset_rows = wet.isnull() | dry.isnull()
+            bad_tot_dry_rows = (tot_dry == 0) | tot_dry.isnull()
+
+            if ((zero_subset_rows | null_subset_rows) & ~bad_tot_dry_rows).any().any():
+                # Missing subset data calculation
+                self.logger.write(f"Warning: Some total dry masses exist without subset data. Continuing...")
+
+            if (~(zero_subset_rows | null_subset_rows) & bad_tot_dry_rows).any().any():
+                # incomplete calculation
+                # Again, should not happen, so just crash it for manual 
+                # inspection
+                self.logger.write('Incomplete calculation! Crashing!')
+                print(data)
+                assert(False)
+
+            ## make sure empty rows are nan
+            #bad_subset_rows = zero_subset_rows | null_subset_rows
+            #data.loc[bad_subset_rows, idx[sample, :]] = np.nan
+
+            ## fix the rows that have incomplete calculations
+            #tot_dry = data.loc[: , idx[sample, 'total dry (kg)']]
+            #incomplete_data = tot_dry == 0 # find rows that are still zero
+            #mass_ratio = dry[incomplete_data] / wet[incomplete_data]
+            #data.loc[incomplete_data , idx[sample, 'mass ratio']] = mass_ratio
+
+            #tot_dry = mass_ratio * tot_wet[incomplete_data]
+            #data.loc[incomplete_data , idx[sample, 'total dry (kg)']] = tot_dry
+
+        return data
+
 
     def _load_depth_xlsx(self):
         kwargs = {
@@ -159,313 +481,23 @@ class ManualProcessor:
 
         return data
 
+
     def update_omnipickle(self):
         # Add manual data to omnipickle
         ensure_dir_exists(self.pickle_destination)
-        self.omnimanager.add_depth_data(self.pickle_destination,
-                self.all_depth_data)
+        if self.all_depth_data:
+            self.omnimanager.add_depth_data(
+                    self.pickle_destination, self.all_depth_data)
 
+        if self.all_masses_data:
+            self.omnimanager.add_masses_data(
+                    self.pickle_destination, self.all_masses_data)
 
-#####
-"""
-    def set_fig_dir(self, fig_dir):
-        self.fig_dir = fig_dir
-        ensure_dir_exists(fig_dir)
-
-    def get_pickle_data(self, pickle_targets=['??-profile-*.pkl']):
-        # Load targeted pickles from a predetermined path.
-        # Default for bed and surface profile data.
-        self.logger.write_section_break()
-        self.logger.write(["Loading profile pickles"])
-
-        data_path = self.root
-        pickle_path = self.root
-        self.loader = data_loading.DataLoader(data_path, pickle_path, self.logger)
-
-        pickle_names = self.get_target_files(pickle_targets)
-        profile_data = self.loader.load_pickles(pickle_names, add_path=False)
-
-        self.logger.write(["Pickles Loaded"])
-        return profile_data
-
-
-    def run_hr_av_profiles(self):
-        # Load pickles and hand off profile data to plotter. Each experiment 
-        # will have one surface and one bed dataframe.
-        profile_data = self.get_pickle_data()
-        self.plot_experiments(profile_data, self.make_hr_av_plot)
-
-    def run_slope_profiles(self):
-        # Get pickled data and hand off the profile data to plotter. Each 
-        # experiment will have one surface and one bed dataframe.
-        profile_data = self.get_pickle_data()
-        subplot_positions = {
-                '1A' : (0,0),
-                '1B' : (0,1),
-                '2A' : (1,0),
-                '2B' : (1,1),
-                '3A' : (2,0),
-                '3B' : (2,1),
-                '4A' : (3,0),
-                '5A' : (3,1),
-                'nrows' : 4,
-                'ncols' : 2,
-                }
-        self.subplot_experiments(profile_data, subplot_positions,
-                self.make_slope_subplot, self.save_fig_slopes)
-
-
-    def subplot_experiments(self, data, subplot_positions, plotting_function, saving_function=None):
-        # Generic function which separates the experiments and then calls the 
-        # provided plotting function in a subplot.
-
-        self.logger.write("Plotting profiles...")
-        self.logger.increase_global_indent()
-        pathnames = data.keys()
-        regex = re.compile(".*surface.pkl")
-        surface_pathnames = filter(regex.match, pathnames)
-
-        n_rows = subplot_positions['nrows']
-        n_cols = subplot_positions['ncols']
-        fig, axs = plt.subplots(nrows=n_rows, ncols=n_cols, sharex=True, sharey=True)
-
-        for surface_pathname in surface_pathnames:
-            # loading data
-            fname = lambda fpath: os.path.split(fpath)[1]
-            experiment = fname(surface_pathname)[0:2]
-            bed_pathname = surface_pathname.replace("surface", "bed")
-            self.logger.write(f"Plotting profiles for experiment {experiment}")
-            self.logger.write([fname(surface_pathname),
-                               fname(bed_pathname)], local_indent=1)
-
-            exp_data = {'surface': data[surface_pathname],
-                        'bed' : data[bed_pathname]
-                       }
-
-            subplot_pos = subplot_positions[experiment]
-            ax = axs[subplot_pos]
-            plotting_function(experiment, exp_data, fig, ax)
-            self.logger.write_blankline()
-
-        if saving_function is not None:
-            filename = f"slope-profiles.png"
-            saving_function(fig, filename)
-
-        plt.show()
-        self.logger.decrease_global_indent()
-        self.logger.write(["Profile plotting complete"])
-
-    def plot_experiments(self, data, plotting_function):
-        # Generic function which separates the experiments and then calls the 
-        # provided plotting function.
-
-        self.logger.write("Plotting profiles...")
-        self.logger.increase_global_indent()
-        pathnames = data.keys()
-        regex = re.compile(".*surface.pkl")
-        surface_pathnames = filter(regex.match, pathnames)
-
-        for surface_pathname in surface_pathnames:
-            # loading data
-            def fname(fpath):
-                return os.path.split(fpath)[1]
-            experiment = fname(surface_pathname)[0:2]
-            bed_pathname = surface_pathname.replace("surface", "bed")
-            self.logger.write(f"Plotting profiles for experiment {experiment}")
-            self.logger.write([fname(surface_pathname),
-                               fname(bed_pathname)], local_indent=1)
-
-            exp_data = {'surface': data[surface_pathname],
-                        'bed' : data[bed_pathname]
-                       }
-
-            plotting_function(experiment, exp_data)
-            self.logger.write_blankline()
-
-        self.logger.decrease_global_indent()
-        self.logger.write(["Profile plotting complete"])
-
-
-    def make_slope_subplot(self, experiment, data_dic, fig, ax):
-        # Make slope plots
-        self.logger.write([f"Making average slope plots for experiment {experiment}"])
-
-        surface = data_dic['surface']
-        bed = data_dic['bed']
-
-        positions = surface.columns.values
-        start = np.amin(positions)
-        flume_slope = global_settings.flume_slope
-        m2cm = 100
-        cm2m = 1/100
-        flume_elevations = positions * flume_slope
-
-        profiles = {"surface" : [surface, "blue"], 
-                    "bed"     : [bed, "black"],
-                   }
-        for name, (profile, plot_color) in profiles.items():
-
-            trended_profile = profile * cm2m + flume_elevations
-            profile_indices = trended_profile.index
-
-            # Can't seem to find a good function to do the linear regression on 
-            # each row...  So I'll have to loop over every row.
-            
-            regressions = pd.DataFrame(index = profile_indices,
-                    columns=['Slope', 'Intercept', 'R-sqr'])
-            xtick_labels = []
-            for index in profile_indices.values:
-                # Do regression
-                dependent = trended_profile.loc[index].values
-                independent = sm.add_constant(positions)#*m2cm)
-                if not np.all(np.isnan(dependent)):
-                    results = sm.OLS(dependent, independent, missing='drop').fit()
-                    p = results.params
-
-                    regressions.loc[index, 'Intercept'] = p[0]
-                    regressions.loc[index, 'Slope'] = p[1]
-                    regressions.loc[index, 'R-sqr'] = results.rsquared
-
-                xtick_labels.append("{0[1]} {0[2]}L/s {0[3]}mins".format(index))
-
-            legend_label =  f"{name.capitalize()} surface slope"
-            regressions['Slope'].plot(ax=ax, color=plot_color,
-                    label=legend_label)
-
-        xtick_loc = np.arange(len(regressions))-1
-        #plt.xticks(xtick_loc, xtick_labels, rotation=45)
-        ax.set_xticks(xtick_loc)
-        ax.set_xticklabels(xtick_labels, rotation=45)
-        ax.set_xlabel("Experiment progression")
-        ax.set_ylabel("Slope")
-        ax.set_title(f"Experiment {experiment} average slope profiles")
-        ax.tick_params(axis='both', top=True, right=True)
-
-        plt.legend()
-
-    def save_fig_slopes(self, figure, filename):
-        # Save the figure
-        
-        # Format the plot layout
-        figure = plt.gcf()
-        figure.set_dpi(80)
-        figure.set_size_inches(24, 13.5)
-        plt.subplots_adjust(left=0.04, bottom = 0.15, right=0.98, top=0.95) # Reduce margins
-
-        # Save it
-        fig_dir = self.fig_dir
-        self.logger.write([f"Saving figure {filename} to {fig_dir}"])
-        save_args = {
-                #'dpi'   : 80,
-                'orientation' : 'landscape',
-                }
-        fpath = os.path.join(fig_dir, filename)
-        figure.savefig(fpath, **save_args)
-
-    def make_hr_av_plot(self, experiment, data_dic):
-        fig_dir = self.fig_dir
-        # Make hour averaged plots
-        self.logger.write([f"Making hour-averaged longitudinal profile plots for experiment {experiment}",
-                           f"Saving figure to {fig_dir}"])
-
-        surface = data_dic['surface']
-        bed = data_dic['bed']
-        depth = surface - bed
-
-        # Plot surface, bed, and depth values
-        ax = None
-        data_color_pairs = ((surface, "br"),
-                            (bed, "gb"),
-                            (depth, "rg"),
-                           )
-        for profiles, color in data_color_pairs:
-            hour_av = profiles.mean(axis=0, level='Exp time')
-            ax = self.plot_profiles(hour_av, ax=ax, color=color)
-
-        # Make an overall legend title that acts like legend column titles
-        leg_words = ['Water', 'Surface', 'Bed', ' ', 'Water', 'Depth']
-        leg_word_order = [0, 2, 4, 1, 3, 5]
-        leg_title_row = '{{{}: <10}}'*3
-        leg_blank = leg_title_row + '\n' + leg_title_row + ' '*20
-        leg_blank = leg_blank.format(*leg_word_order)
-        title = leg_blank.format(*leg_words)
-
-        # Ignore current legend labels. Make new set where first two columns don't 
-        # have labels and last one has the shared labels.
-        handles, labels = ax.get_legend_handles_labels()
-        labels = ['']*16 \
-                + ['Rising {}L/s'.format(Q) for Q in [50, 62, 75, 87, 100]] \
-                + ['Falling {}L/s'.format(Q) for Q in [87, 75, 62]]
-
-        # Format plot labels and ticks
-        plt.title("Experiment {} hour-averaged profiles (Flow towards left)".format(experiment))
-        ax.set_xlabel("Distance from flume exit (m)")
-        ax.set_ylabel("Height (cm)")
-        ax.set_xlim((2,8))
-        ax.set_ylim((0,35))
-        plt.tick_params(axis='y', right=True, labelright=True)
-        plt.tick_params(axis='x', top=True)#, labelright=True)
-
-        # Format the plot layout
-        figure = plt.gcf()
-        figure.set_dpi(80)
-        figure.set_size_inches(24, 13.5)
-        ax.legend(handles, labels, ncol=3, title=title,
-                loc='upper right', bbox_to_anchor=(0.99, 0.16), borderaxespad=0.0)
-        plt.subplots_adjust(left=0.04, bottom = 0.05, right=0.98, top=0.95) # Reduce margins
-
-        #plt.show()
-
-        # Save the figure
-        save_args = {
-                #'dpi'   : 80,
-                'orientation' : 'landscape',
-                }
-        fname = "profiles-hr-av-{}.png".format(experiment)
-        fpath = os.path.join(fig_dir, fname)
-        figure.savefig(fpath, **save_args)
-
-
-    def plot_profiles(self, profiles, color, ax=None):
-        n_profiles = profiles.shape[0]
-
-        # Make some color scales
-        mid_scale = self.get_scale(0.20, .80, n_profiles)
-        light_scale = self.get_scale(0.15, 1, n_profiles)
-        dark_scale = self.get_scale(0, 0.85, n_profiles)
-        zeros = np.zeros(n_profiles)
-
-        scales = {
-                "gr"  : np.stack((mid_scale, mid_scale[::-1], zeros), axis=1),
-                "bg" : np.stack((zeros, mid_scale, mid_scale[::-1]), axis=1),
-                "rb" : np.stack((mid_scale[::-1], zeros, mid_scale), axis=1),
-                "red" : np.stack((light_scale, zeros, zeros), axis=1),
-                "blue" : np.stack((zeros, zeros, light_scale), axis=1),
-                "grey" : np.stack((dark_scale, dark_scale, dark_scale), axis=1),
-                }
-        #styles = [':', '-.', '--', '-', ':', '-', '--', '-.']
-        styles = (-(-n_profiles//4) * [':', '-', '-.', '--'])[0:n_profiles]
-        #markers = ['o', 'v', '^', 's', '*', '+', 'x', 'D']
-
-        t_profiles = profiles.transpose()
-        if ax is None:
-            return t_profiles.plot(color=scales[color], style=styles)
-        else:
-            return t_profiles.plot(ax=ax, color=scales[color], style=styles)
-
-    def get_scale(self, min, max, n_colors):
-        return (max-min) * np.linspace(0, 1, n_colors) + min
-
-"""
+        if self.all_sieve_data:
+            self.omnimanager.add_sieve_data(
+                    self.pickle_destination, self.all_sieve_data)
 
 
 if __name__ == "__main__":
     manual_processor = ManualProcessor()
     manual_processor.run()
-    #crawler = PlottingCrawler()#no_log=True)
-    #exp_root = '/home/alex/ubc/research/feed-timing/data/'
-    #crawler.set_root(f"{exp_root}data-links/manual-data/pickles")
-    #crawler.set_fig_dir(f"{exp_root}data-links/manual-data/figures")
-    ##crawler.setup_loader()
-    #crawler.run('plot-slope-profiles')
-    #crawler.end()

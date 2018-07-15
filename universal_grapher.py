@@ -69,9 +69,6 @@ class UniversalGrapher:
         self.logger = Logger(self.log_filepath, default_verbose=True)
         self.logger.begin_output("Universal Grapher")
 
-        # Start up loader
-        #self.loader = DataLoader(self.Qs_pickle_source, logger=self.logger)
-
         # omnimanager
         self.omnimanager = OmnipickleManager(self.logger)
         self.omnimanager.restore()
@@ -82,7 +79,7 @@ class UniversalGrapher:
         self.ignore_steps = []
 
     # General use functions
-    def generic_greeting(self, name, load_fu, plot_fu):
+    def generic_greeting(self, name, load_fu, plot_fu, plot_fu_kwargs=None):
         self.logger.write([f"Making {name} plots..."])
 
         indent_function = self.logger.run_indented_function
@@ -90,7 +87,7 @@ class UniversalGrapher:
         indent_function(load_fu,
                 before_msg="Loading data", after_msg="Data Loaded!")
 
-        indent_function(plot_fu,
+        indent_function(plot_fu, kwargs=plot_fu_kwargs,
                 before_msg=f"Plotting {name}",
                 after_msg="Finished Plotting!")
 
@@ -124,23 +121,24 @@ class UniversalGrapher:
         return rgb_fu
 
     def roll_data(self, data, roll_kwargs={}, plot_kwargs={}):
-        # Make rolling averages on the provided data.
+        # Roll the data. Returns the generic rolled object for flexibility of 
+        # what functions to call on the roll.
 
-        time = data.loc[:, 'exp_time_hrs']
+        # Get the function parameters
         y_var = roll_kwargs.pop('y')
+
+        # Get the data
+        time = data.loc[:, plot_kwargs['x']]
         y = data.loc[:, y_var]
+
+        # Convert to a series
         series = pd.Series(data=y.values, index=time)
 
-        rolled = series.rolling(**roll_kwargs)
-        roll_kwargs['y'] = y_var
+        # Roll it
+        rolled_data = series.rolling(**roll_kwargs)
 
-        #rolled = data.rolling(**roll_kwargs)
-        average = rolled.mean()
-
-        if self.rolling_av is None:
-            self.rolling_av = average
-        else:
-            self.rolling_av = self.rolling_av.append(average, verify_integrity=True)
+        roll_kwargs['y'] = y_var # Add it back into kwargs
+        return rolled_data
 
     def _calc_retrended_slope(self, data, flume_elevations=None, intercept=None):
         # Assumes data values have same units as data column names (which are 
@@ -1330,6 +1328,195 @@ class UniversalGrapher:
         self.format_generic_figure(fig, axs, plot_kwargs, fig_kwargs)
 
 
+    def make_simple_masses_plots(self):
+        self.generic_greeting("total mass vs time",
+                self.omnimanager.reload_masses_data,
+                self.plot_simple_masses)
+
+    def plot_simple_masses(self):
+        x_name = 'exp_time'
+        y_name = 'total dry (kg)'
+        plot_kwargs = {
+                'x'      : x_name,
+                'y'      : y_name,
+                #'kind'   : 'scatter',
+                'legend' : False,
+                }
+        masses_gather_kwargs = {
+                'columns'   : plot_kwargs['y']
+                }
+
+        masses_data = self.gather_masses_data(masses_gather_kwargs)
+
+        filename_x = x_name.replace('_', '-').lower()
+        filename_y = y_name.replace(' ', '-').lower()
+        figure_name = f"simple_masses_{filename_y}_v_{filename_x}.png"
+
+        # Start plot loop
+        self.generic_plot_experiments(
+            self._plot_simple_masses, self._format_simple_masses, 
+            masses_data, plot_kwargs, figure_name)
+
+    def _plot_simple_masses(self, exp_code, masses_data, plot_kwargs):
+        # Do stuff during plot loop
+        # Plot an experiment
+
+        # Not actually grouped, but can still use self.plot_group
+        self.plot_group(masses_data[exp_code], plot_kwargs)
+
+    def _format_simple_masses(self, fig, axs, plot_kwargs):
+        # Format the figure after the plot loop
+        fig_kwargs = {
+                'xlabel'        : r"Experiment time (hours)",
+                'ylabel'        : r"Total dry mass (kg)",
+                'title'         : r"Total bedload mass at end of period",
+                'legend_labels' : [r"Total dry mass (kg)"],
+                }
+        self.format_generic_figure(fig, axs, plot_kwargs, fig_kwargs)
+
+
+    def make_simple_sieve_plots(self):
+        self.generic_greeting(" 11.2mm vs time",
+                self.omnimanager.reload_sieve_data,
+                self.plot_simple_sieve)
+
+    def plot_simple_sieve(self):
+        x_name = 'exp_time'
+        y_name = 11.2
+        plot_kwargs = {
+                'x'      : x_name,
+                'y'      : y_name,
+                #'kind'   : 'scatter',
+                'legend' : False,
+                }
+        sieve_gather_kwargs = {
+                'columns'   : plot_kwargs['y']
+                }
+
+        sieve_data = self.gather_sieve_data(sieve_gather_kwargs)
+
+        filename_x = x_name.replace('_', '-').lower()
+        filename_y = f"{y_name}".replace('.', '-').lower()
+        figure_name = f"simple_sieve_{filename_y}_v_{filename_x}.png"
+
+        # Start plot loop
+        self.generic_plot_experiments(
+            self._plot_simple_sieve, self._format_simple_sieve, 
+            sieve_data, plot_kwargs, figure_name)
+
+    def _plot_simple_sieve(self, exp_code, sieve_data, plot_kwargs):
+        # Do stuff during plot loop
+        # Plot an experiment
+
+        # Not actually grouped, but can still use self.plot_group
+        self.plot_group(sieve_data[exp_code], plot_kwargs)
+
+    def _format_simple_sieve(self, fig, axs, plot_kwargs):
+        # Format the figure after the plot loop
+        fig_kwargs = {
+                'xlabel'        : r"Experiment time (hours)",
+                'ylabel'        : r"Mass (g)",
+                'title'         : r"Total bedload of 11.2mm particles per period",
+                'legend_labels' : [r"Mass (g)"],
+                }
+        self.format_generic_figure(fig, axs, plot_kwargs, fig_kwargs)
+
+
+    def make_sieve_di_plots(self, Di=50):
+        self.generic_greeting(f" D{Di} vs time",
+                self.omnimanager.reload_sieve_data,
+                self.plot_sieve_di, plot_fu_kwargs={'Di' : Di})
+
+    def plot_sieve_di(self, **kwargs):
+        x_name = 'exp_time'
+        y_name = f"D{kwargs['Di']}"
+        plot_kwargs = {
+                'x'      : x_name,
+                'y'      : y_name,
+                #'kind'   : 'scatter',
+                'legend' : False,
+                }
+        sieve_gather_kwargs = {
+                }
+
+        sieve_data = self.gather_sieve_data(sieve_gather_kwargs)
+
+        filename_x = x_name.replace('_', '-').lower()
+        filename_y = f"{y_name}".replace('.', '-').lower()
+        figure_name = f"sieve_di_{filename_y}_v_{filename_x}.png"
+
+        # Start plot loop
+        self.generic_plot_experiments(
+            self._plot_sieve_di, self._format_sieve_di, 
+            sieve_data, plot_kwargs, figure_name)
+
+    def _plot_sieve_di(self, exp_code, sieve_data, plot_kwargs):
+        # Do stuff during plot loop
+        # Plot an experiment
+        
+        Di_name = plot_kwargs['y']
+        target_Di = int(Di_name[1:])
+
+        data = sieve_data[exp_code]
+        data[Di_name] = self.calc_Di(data, target_Di)
+
+        # Not actually grouped, but can still use self.plot_group
+        self.plot_group(sieve_data[exp_code], plot_kwargs)
+    
+    def _format_sieve_di(self, fig, axs, plot_kwargs):
+        # Format the figure after the plot loop
+        y_name = plot_kwargs['y']
+        fig_kwargs = {
+                'xlabel'        : r"Experiment time (hours)",
+                'ylabel'        : r"Size (mm)",
+                'title'         : rf"{y_name} of the bedload collected in the sediment trap",
+                'legend_labels' : [r"Mass (g)"],
+                }
+        self.format_generic_figure(fig, axs, plot_kwargs, fig_kwargs)
+
+    def calc_Di(self, data, target_Di=50):
+        # Calculate the Di values for a dataframe of sieve masses
+        # data should be a dataframe of raw masses per size class (size sorted 
+        # smallest to largest)
+        # target_Di is an integer between 0 and 100
+        # 
+        # returns series
+
+        assert(0 < target_Di < 100)
+        target = target_Di/100
+
+        # Calculate cumulative curve and normalize
+        cumsum = data.cumsum(axis=1)
+        fractional = cumsum.divide(cumsum.loc[:, 45], axis=0)
+
+        # interpolate the percentile
+        # I CANNOT find a cleaner way to do this... Definitely not in Pandas.
+        np_frac = fractional.values
+        np_cols = fractional.columns.values
+
+        np_lesser = np_frac <= target
+        np_rlesser = np.roll(np_lesser, -1, axis=1)
+        np_lower = np_lesser & ~np_rlesser # find True w/ False to right
+
+        np_greater = np_frac >= target
+        np_rgreater = np.roll(np_greater, 1, axis=1)
+        np_upper = np_greater & ~np_rgreater # find True w/ False to left
+
+        lower_frac = np_frac[np_lower]
+        upper_frac = np_frac[np_upper]
+        lower = np_cols[np.argmax(np_lower, axis=1)] # lower size classes
+        upper = np_cols[np.argmax(np_upper, axis=1)] # upper size classes
+
+        lower_psi = np.log2(lower)
+        upper_psi = np.log2(upper)
+
+        Di_psi = lower_psi + (target - lower_frac) * (upper_psi - lower_psi) /\
+                            (upper_frac - lower_frac)
+        Di = 2**Di_psi
+
+        return pd.Series(Di, index=fractional.index, name=f"D{target_Di}")
+
+
     def gather_depth_data(self, kwargs):
         # Gather all the depth data into a dict of dataframes separated by 
         # exp_code
@@ -1362,7 +1549,56 @@ class UniversalGrapher:
                 self.depth_data_frames[exp_code] = []
             self.depth_data_frames[exp_code].append(data.loc[:, :])
 
-    
+    def gather_masses_data(self, kwargs):
+        # Gather all the masses data into a dict of dataframes separated by 
+        # exp_code
+        self.masses_data_frames = {}
+        self.omnimanager.apply_to_periods(self._gather_masses_data, kwargs)
+
+        # Combines the separate frames into one dataframe per experiment
+        masses_data = {}
+        for exp_code, frames in self.masses_data_frames.items():
+            combined_data = pd.concat(frames)
+            masses_data[exp_code] = combined_data.sort_index()
+        return masses_data
+
+    def _gather_masses_data(self, period, kwargs):
+        # Have periods add themselves to a precursor of the overall masses 
+        # dataframe dict
+        cols = kwargs['columns']
+        exp_code = period.exp_code
+
+        data = period.masses_data
+        if data is not None:
+            if exp_code not in self.masses_data_frames:
+                self.masses_data_frames[exp_code] = []
+            self.masses_data_frames[exp_code].append(data.loc[:, cols])
+
+    def gather_sieve_data(self, kwargs):
+        # Gather all the sieve data into a dict of dataframes separated by 
+        # exp_code
+        self.sieve_data_frames = {}
+        self.omnimanager.apply_to_periods(self._gather_sieve_data, kwargs)
+
+        # Combines the separate frames into one dataframe per experiment
+        sieve_data = {}
+        for exp_code, frames in self.sieve_data_frames.items():
+            combined_data = pd.concat(frames)
+            sieve_data[exp_code] = combined_data.sort_index()
+        return sieve_data
+
+    def _gather_sieve_data(self, period, kwargs):
+        # Have periods add themselves to a precursor of the overall sieve 
+        # dataframe dict
+        exp_code = period.exp_code
+
+        data = period.sieve_data
+        if data is not None:
+            if exp_code not in self.sieve_data_frames:
+                self.sieve_data_frames[exp_code] = []
+            self.sieve_data_frames[exp_code].append(data.loc[:, ])
+
+
     # Functions to plot only gsd data
     def make_mean_gsd_time_plots(self, y_name='D50'):
         self.logger.write([f"Making station-averaged gsd time plots..."])
@@ -1748,11 +1984,113 @@ class UniversalGrapher:
 
 
     # Functions to plot only Qs data
+    def make_Qs_plots(self):
+        self.logger.write([f"Making Qs time plots..."])
+
+        self.ignore_steps = []#['rising-50L']
+
+        indent_function = self.logger.run_indented_function
+
+        indent_function(self.load_Qs_data,
+                before_msg="Loading data", after_msg="Data Loaded!")
+
+        indent_function(self.plot_Qs_data,
+                before_msg=f"Plotting Qs data",
+                after_msg="Finished Plotting!")
+
+        self.logger.end_output()
+
+    def plot_Qs_data(self):
+        # Do stuff before plot loop
+        x_name = 'exp_time_hrs'
+        y_name = 'Bedload all'
+        roll_window = 10 #minutes
+
+        plot_kwargs = {
+                'x'      : x_name,
+                'y'      : y_name,
+                'kind'   : 'scatter',
+                'legend' : True,
+                #'logy' : True,
+                'xlim' : (-0.25, 8.25),
+                #'ylim' : (0.001, settings.lighttable_bedload_cutoff), # for use with logy
+                }
+
+        rolling_kwargs = {
+                'y'           : plot_kwargs['y'],
+                'window'      : roll_window*60, # seconds
+                'min_periods' : 20,
+                'center'      : True,
+                #'on'          : plot_kwargs['x'],
+                }
+        gather_kwargs = {
+                }
+
+        qs_data = self.gather_Qs_data(gather_kwargs)
+
+        filename_y_col = y_name.replace(' ', '-').lower()
+        logy_str = '_logy' if 'logy' in plot_kwargs and plot_kwargs['logy'] else ''
+        figure_name = f"cleaned_{filename_y_col}_roll-{roll_window}min{logy_str}.png"
+
+        fig, axs = self.create_experiment_subplots(rows=2, cols=4)
+        
+        # Make one plot per experiment
+        exp_codes = list(qs_data.keys())
+        exp_codes.sort()
+        for exp_code, ax in zip(exp_codes, axs.flatten()):
+            self.logger.write(f"Plotting experiment {exp_code}")
+
+            plot_kwargs['ax'] = ax
+            experiment = self.omnimanager.experiments[exp_code]
+            ax.set_title(f"Experiment {exp_code} {experiment.name}")
+
+            accumulated_data = qs_data[exp_code]
+
+            # Plot the data points
+            accumulated_data.plot(**plot_kwargs)
+
+            # Generate and plot rolled data
+            rolled_data = self.roll_data(accumulated_data,
+                    roll_kwargs=rolling_kwargs, plot_kwargs=plot_kwargs)
+
+            rolling_mean = rolled_data.mean()
+            rolling_stddev = rolled_data.std()
+
+            def plot_stddev(mean, stddev, label, series_plot_kwargs):
+                #range = pd.concat([mean - stddev, mean +stddev])
+                range = mean + stddev
+                range.plot(label=label, **series_plot_kwargs)
+                
+            # Plot the rolls
+            series_plot_kwargs = {k : plot_kwargs[k] for k in plot_kwargs
+                                        if k not in ['x', 'y', 'kind']}
+            #series_plot_kwargs['xlim'] = ax.get_xlim()
+            #series_plot_kwargs['style'] = 'r'
+            rolling_mean.plot(label='Mean', style='r', **series_plot_kwargs)
+            plot_stddev(rolling_mean, rolling_stddev, "Stddev", series_plot_kwargs)
+            plot_stddev(rolling_mean, rolling_stddev*5, "5x Stddev envelope", series_plot_kwargs)
+
+            ax.set_title(f"Experiment {experiment.code} {experiment.name}")
+
+        fig_kwargs = {
+                'xlabel'        : r"Experiment time (hours)",
+                'ylabel'        : r"Bedload (g/s)",
+                'title'         : rf"Cleaned lighttable bedload data with std dev envelopes",
+                #'legend_labels' : [r"Elevation Std dev"],
+                }
+        plt.legend()
+        self.format_generic_figure(fig, axs, plot_kwargs, fig_kwargs)
+
+        # Save the figure
+        self.save_figure(figure_name)
+        plt.show()
+
+
     def make_experiment_plots(self):
         self.logger.write(["Making experiment plots..."])
 
         #self.experiments = {}
-        self.ignore_steps = ['rising-50L']
+        self.ignore_steps = []#['rising-50L']
 
         indent_function = self.logger.run_indented_function
 
@@ -1776,9 +2114,10 @@ class UniversalGrapher:
                 'x'    : x_column,
                 'y'    : y_column,
                 'kind' : 'scatter',
-                'logy' : True,
-                'xlim' : (0.5, 8.5),
-                'ylim' : (0.001, 5000), # for use with logy
+                #'logy' : True,
+                'xlim' : (-0.25, 8.25),
+                #'xlim' : (0.5, 8.5),
+                #'ylim' : (0.001, 5000), # for use with logy
                 #'ylim' : (0.001, 500), # for use with logy
                 #'ylim' : (0, 40),
                 }
@@ -1797,7 +2136,7 @@ class UniversalGrapher:
 
         filename_y_col = y_column.replace(' ', '-').lower()
         logy_str = '_logy' if 'logy' in plot_kwargs and plot_kwargs['logy'] else ''
-        figure_name = f"{filename_y_col}_roll-{roll_window}min{logy_str}.png"
+        figure_name = f"cleaned_{filename_y_col}_roll-{roll_window}min{logy_str}.png"
 
         fig, axs = plt.subplots(2, 4, sharey=True, sharex=True, figsize=(16,10))
         #twin_axes = []
@@ -1852,7 +2191,6 @@ class UniversalGrapher:
         self.logger.write(f"Saving figure to {filepath}")
         plt.savefig(filepath, orientation='landscape')
         plt.show()
-
 
     def make_hysteresis_plots(self):
         self.logger.write(["Making hysteresis plots..."])
@@ -2135,7 +2473,7 @@ class UniversalGrapher:
         data = data.iloc[::subsample_step, :] # reduce num data points
 
         # Make feed series
-        feed_rate = tokens.PeriodData.feed_rates[exp_code]
+        feed_rate = settings.feed_rates[exp_code]
         #n_res = 1
         #feed_matrix = np.tile(feed_rate, (n_res, 1)) / n_res
         #feed_series = feed_matrix.T.flatten()
@@ -2398,8 +2736,11 @@ class UniversalGrapher:
 if __name__ == "__main__":
     # Run the script
     grapher = UniversalGrapher()
+    grapher.make_sieve_di_plots(Di=84)
+    #grapher.make_simple_sieve_plots()
+    #grapher.make_simple_masses_plots()
     #grapher.make_dem_subplots()
-    grapher.make_dem_semivariogram_plots()
+    #grapher.make_dem_semivariogram_plots()
     #grapher.make_dem_stats_plots()
     #grapher.make_dem_stats_plots()
     #grapher.make_dem_roughness_plots()
@@ -2413,6 +2754,7 @@ if __name__ == "__main__":
     #grapher.make_mean_gsd_time_plots(y_name=['Fsx'])#, 'D90'])
     #grapher.make_gsd_plots(x_name='exp_time', y_name='D50')
     #grapher.make_gsd_plots(x_name='sta_str',  y_name='D50')
+    #grapher.make_Qs_plots()
     #grapher.make_experiment_plots()
     #grapher.make_hysteresis_plots()
     #grapher.make_cumulative_plots()

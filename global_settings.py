@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import numpy as np
+from os.path import join as pjoin
 
 gravity = 9.81 #m/s^2
 water_density = 1000 # kg/m^3
@@ -15,6 +16,7 @@ dem_long_offset = 1124 # mm stationing of most downstream edge
 dem_wall_trim = 100 # mm from each wall to throw away
 dem_color_limits = [100, 260] # mm bed elevation range limits
 
+lighttable_bedload_cutoff = 800 # g/s max rate
 
 discharge_order = ['r50L', 'r62L', 'r75L', 'r87L', 'r100L',
                    'f87L', 'f75L', 'f62L']
@@ -33,23 +35,26 @@ feed_rates = {
 
 # General file settings
 root_dir = "/home/alex/feed-timing/data"
-figure_destination = f"{root_dir}/prelim-figures"
+figure_destination = pjoin(root_dir, "prelim-figures")
 log_dir = "/home/alex/feed-timing/code/log-files"
 
 # omnipickle dirs
 omnipickle_name = "omnipickle"
-omnipickle_path = f"{root_dir}/{omnipickle_name}.pkl"
+omnipickle_path = pjoin(root_dir, f"{omnipickle_name}.pkl")
 
 # lighttable dirs
-lighttable_data_dir = f"{root_dir}/extracted-lighttable-results"
-Qs_pickles_source = f"{lighttable_data_dir}/secondary-processed-pickles"
+lighttable_data_dir = pjoin(root_dir, "extracted-lighttable-results")
+Qs_raw_pickles = pjoin(lighttable_data_dir, "raw-pickles")
+Qs_primary_pickles = pjoin(lighttable_data_dir, "primary-processed-pickles")
+Qs_secondary_pickles = pjoin(lighttable_data_dir, "secondary-processed-pickles")
+Qs_tertiary_pickles = pjoin(lighttable_data_dir, "tertiary-processed-pickles")
 
 # cart data dirs
-cart_data_dir = f"{root_dir}/cart"
-cart_pickles_dir = f"{cart_data_dir}/cart-pickles"
+cart_data_dir = pjoin(root_dir, "cart")
+cart_pickles_dir = pjoin(cart_data_dir, "cart-pickles")
 
 # manual data dirs
-manual_data_dir = f"{root_dir}/manual-data"
-manual_pickles_dir = f"{manual_data_dir}/manual-pickles"
+manual_data_dir = pjoin(root_dir, "manual-data")
+manual_pickles_dir = pjoin(manual_data_dir, "manual-pickles")
 
 
