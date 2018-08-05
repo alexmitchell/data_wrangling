@@ -21,6 +21,11 @@ lighttable_bedload_cutoff = 800 # g/s max rate
 discharge_order = ['r50L', 'r62L', 'r75L', 'r87L', 'r100L',
                    'f87L', 'f75L', 'f62L']
 # Feed scenario rates per step (kg/hr)
+sum_feed_Di = {
+    'D16' :  3.468005, # mm; calculated from 5 feed samples
+    'D50' :  7.829806, # mm; calculated from 5 feed samples
+    'D84' : 16.770694, # mm; calculated from 5 feed samples
+}
 feed_rates = {
         '1A' : np.zeros(8),
         '1B' : np.zeros(8),

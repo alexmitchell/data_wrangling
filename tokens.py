@@ -99,6 +99,10 @@ class PeriodData:
     # This class is specific to Alex's experiment, but the framework could be 
     # reused for other projects.
 
+    # PeriodData class variables
+    Qs_Di_ratios = {} # {'Di' : [ratios...]}
+    Qs_Di_multiplier = None # {'Di' : mean_ratio}
+
     # Creation and Token I/O
     def __init__(self, exp_code, limb, discharge, period_range):
         # exp_code similar to '1A', '3B', etc.
@@ -141,6 +145,10 @@ class PeriodData:
         # picklepath.
         self.data_dict = {}
 
+        # Hacky way to scale Qs data with the trap data
+        self.Qs_trap_multiplier = 1 
+        self.Qs_Di_trap_multiplier = 1 
+
     def from_existing(old_period):
         # Create a new PeriodData obj from an existing one. Returns the new 
         # PeriodData object. Used for updating the tree to new definitions of 
@@ -154,6 +162,10 @@ class PeriodData:
         #    np.depth_picklepath = op.depth_picklepath 
         #except AttributeError:
         #    np.depth_picklepath = None
+
+    def make_empty(exp_code, limb, discharge, period_range):
+        # args like '3B', 'falling', '62L', 't20-t40'
+        return PeriodData(exp_code, limb, discharge, period_range)
 
     def from_Qs_picklepath(Qs_picklepath):
         # generate a PeriodData object from a given Qs_picklepath
@@ -211,6 +223,48 @@ class PeriodData:
         #data[name] = data[name].map(orderizer)
         #data.sort_values(by=name, inplace=True)
 
+    def calc_Di(self, data, target_Di=50):
+        # Calculate the Di values for a dataframe of sieve masses
+        # data should be a dataframe of raw masses per size class (size sorted 
+        # smallest to largest)
+        # target_Di is an integer between 0 and 100
+        # 
+        # returns series
+
+        assert(0 < target_Di < 100)
+        target = target_Di/100
+
+        # Calculate cumulative curve and normalize
+        cumsum = data.cumsum(axis=1)
+        fractional = cumsum.divide(cumsum.iloc[:, -1], axis=0)
+        
+        # interpolate the percentile
+        # I CANNOT find a cleaner way to do this... Definitely not in Pandas.
+        np_frac = fractional.values
+        np_cols = fractional.columns.values
+
+        np_lesser = np_frac <= target
+        np_rlesser = np.roll(np_lesser, -1, axis=1)
+        np_lower = np_lesser & ~np_rlesser # find True w/ False to right
+
+        np_greater = np_frac >= target
+        np_rgreater = np.roll(np_greater, 1, axis=1)
+        np_upper = np_greater & ~np_rgreater # find True w/ False to left
+
+        lower_frac = np_frac[np_lower]
+        upper_frac = np_frac[np_upper]
+        lower = np_cols[np.argmax(np_lower, axis=1)] # lower size classes
+        upper = np_cols[np.argmax(np_upper, axis=1)] # upper size classes
+
+        lower_psi = np.log2(lower)
+        upper_psi = np.log2(upper)
+
+        Di_psi = lower_psi + (target - lower_frac) * (upper_psi - lower_psi) /\
+                            (upper_frac - lower_frac)
+        Di = 2**Di_psi
+
+        return pd.Series(Di, index=fractional.index, name=f"D{target_Di}")
+
 
     # Adding data
     def _make_new_dataset(self, name, picklepath, kwargs):
@@ -241,40 +295,52 @@ class PeriodData:
         self._make_new_dataset('Qs-secondary', Qs_picklepath, kwargs)
 
     def add_gsd_data(self, gsd_picklepath, **kwargs):
-        # "all_data" is all the data and will need to be sliced
+        # "all_data" is the data for all experiments and will need to be sliced
         # "generate_path" indicates that the picklepath provided is actually 
         # the pickle directory and a path need to be generated.
         # See _make_new_dataset for more kwargs
         #
         # return the name if failed, otherwise return ''
-        if 'all_data' in kwargs and 'specific_data' not in kwargs:
-            # Get values to select from multiindex
-            exp_code = self.exp_code
-            period = self.period_end
-            step = self.step
-            length = '8m' if period == 't60' else '2m'
+            
+        # Get values to select from multiindex
+        exp_code = self.exp_code
+        period = self.period_end
+        step = self.step
+        length = '8m' if period == 't60' else '2m'
 
+        
+        # Remove any existing data
+        #print(f"{exp_code} removing gsd")
+        self._remove_datasets([f"gsd"])
+        #print(self.data_dict.keys())
+
+        if 'all_data' in kwargs and 'specific_data' not in kwargs:
             idx = pd.IndexSlice
             index_slicer = idx[exp_code, step, period, :, length]
             col_slicer = idx[:]
             all_data = kwargs['all_data']
+
+            fail_name = f"{exp_code}-{step}-{period}-{length}"
             try:
                 kwargs['specific_data'] = all_data.loc[index_slicer, col_slicer]
+
             except KeyError:
-                #print(period)
-                #print(gsd_picklepath)
-                #print(index_slicer)
-                #print(col_slicer)
-                #print(f"{exp_code}-{step}-{period}-{length}")
-                #print(all_data)
-                #assert(False)
-                #print(all_data.loc[index_slicer, col_slicer])
-                return f"{exp_code}-{step}-{period}-{length}"
+                # Slice was illegal, therefore data does not exist
+                # Skip this period
+                #print(f"FAILED: {exp_code}-{step}-{period}-{length}")
+                return fail_name
+
+            if kwargs['specific_data'].empty:
+                # DataFrame slice was legal, but there are no entries.
+                # Skip this period
+                #print(f"EMPTY: {exp_code}-{step}-{period}-{length}")
+                return fail_name
 
         if 'generate_path' in kwargs:
             # Picklepath is actually the pickle dir
             pkl_filename = f"{exp_code}-{step}-{period}_gsd.pkl"
             gsd_picklepath = pjoin(gsd_picklepath, pkl_filename)
+
         self._make_new_dataset('gsd', gsd_picklepath, kwargs)
         return ''
 
@@ -417,9 +483,38 @@ class PeriodData:
 
     def reload_Qs_data(self, loader):
         # Loads the most up to date version of the Qs pickle
+        if not self.has_Qs:
+            return
         self._Qs_dataset.reload_data(loader)
-        #print(self._Qs_dataset.picklepath)
-        #assert(False)
+
+        # Scale the lighttable data by the trap mass
+        # Not the most efficient or safest place to do it, but easiest to 
+        # implement.
+        # Creates a multiplier which is applied when the lighttable data is 
+        # accessed (see Attributes)
+        if 'masses-s1' in self.data_dict:
+            self.reload_masses_data(loader)
+            total_dry = (self.masses_data['total dry (kg)']).iloc[0] * 1000
+            Qs_sum = self._Qs_dataset.data['Bedload all'].sum()
+
+            self.Qs_trap_multiplier = total_dry / Qs_sum
+
+        if 'sieve-s1' in self.data_dict:
+            # Scale the Di values to match the global ratio of sieve to light 
+            # table values for that Di
+            self.reload_sieve_data(loader)
+            all_labels = self._Qs_dataset.data.columns
+            Di_targets = [int(Di[1:]) for Di in all_labels \
+                    if len(Di) == 3 and Di[0] == 'D' and Di[1:].isdigit()]
+            for Di_target in Di_targets:
+                Di_name = f"D{Di_target}"
+                trap_Di = self.calc_Di(self.sieve_data, Di_target).values[0]
+                lt_Di_mean = self._Qs_dataset.data[Di_name].mean()
+                ratio = trap_Di / lt_Di_mean
+                if Di_name in PeriodData.Qs_Di_ratios:
+                    PeriodData.Qs_Di_ratios[Di_name].append(ratio)
+                else:
+                    PeriodData.Qs_Di_ratios[Di_name] = [ratio]
 
     def reload_gsd_data(self, loader):
         # Loads the gsd data
@@ -454,22 +549,51 @@ class PeriodData:
         # provides the most up to date Qs DataSet
         if 'Qs-secondary' in self.data_dict:
             return self.data_dict['Qs-secondary']
-        else:
+        elif 'Qs-primary' in self.data_dict:
             return self.data_dict['Qs-primary']
+        else:
+            return None
 
     @property
     def Qs_picklepath(self):
         # provides the path for the most up to date version of the Qs pickle
         # (ie. primary vs secondary processed)
-        return self._Qs_dataset.picklepath
+        dataset = self._Qs_dataset
+        return dataset.picklepath if dataset is not None else None
 
     @property
     def Qs_data(self):
-        return self._Qs_dataset.data
+        dataset = self._Qs_dataset
+        if dataset is None:
+            return None
+        else:
+            data = dataset.data
+            # Scale bedload and grain counts by total bedload of sieved samples
+            data.loc[:, 'Bedload all':'Count 45'] = \
+                    data.loc[:, 'Bedload all':'Count 45'] * \
+                    self.Qs_trap_multiplier
+
+            # Scale Di by global ratio of sieved samples
+            if PeriodData.Qs_Di_multiplier is None:
+                PeriodData.Qs_Di_multiplier = { Di : np.array(ratios).mean() \
+                        for Di, ratios in PeriodData.Qs_Di_ratios.items()}
+                #[print(f"Mean {Di} multiplier = {ratio}") \
+                #        for Di, ratio in PeriodData.Qs_Di_multiplier.items()]
+                #print("\n###  Skipping Di scaling for now  ###\n")
+            pd_ratios = pd.Series(PeriodData.Qs_Di_multiplier)
+            data.loc[:, pd_ratios.index] = \
+                    data.loc[:, pd_ratios.index] * pd_ratios
+
+            return data
 
     @Qs_data.setter
     def Qs_data(self, data):
+        assert(self._Qs_dataset is not None)
         self._Qs_dataset.data = data
+
+    @property
+    def has_Qs(self):
+        return self._Qs_dataset is not None
 
     @property
     def gsd_data(self):
@@ -498,8 +622,8 @@ class PeriodData:
         s2 = 'masses-s2'
         ddict = self.data_dict
         if s1 in ddict and s2 in ddict:
-            # Add the two subsamples together to get a larger subsample and 
-            # more accurately calculate dry mass
+            # Combine the two subsamples to get a accurately calculated dry 
+            # mass
             data = ddict[s1].data + ddict[s2].data
             data['total wet (kg)'] = ddict[s1].data['total wet (kg)']
             data['mass ratio'] = data['subset dry (kg)'] / data['subset wet (kg)']
@@ -559,6 +683,8 @@ class Experiment:
         self.sorted_ranks = []
         self.accumulated_data = None
         self.init_time = asctime() # asctime of last instance
+
+        self._feed_dataset = None
 
     def from_existing(old_experiment, logger):
         # Create a new experiment from an existing one. Returns the new 
@@ -640,6 +766,16 @@ class Experiment:
                   'generate_path' : True}
         return self.add_generic_data(period_fu, **kwargs)
 
+    def add_feed_data(self, feed_pickledir, feed_data):
+        if self.code in feed_data:
+            self._feed_dataset = DataSet('feed')
+            pkl_filename = f"{self.code}_feed.pkl"
+            picklepath = pjoin(feed_pickledir, pkl_filename)
+            self._feed_dataset.picklepath = picklepath
+            self._feed_dataset.data = feed_data[self.code]
+
+        return '' # suppress output regarding missing feed data
+
     
     # Processing
     def apply_period_function(self, fu, kwargs={}):
@@ -663,6 +799,11 @@ class Experiment:
         self.accumulated_data.sort_values(by='exp_time_hrs', inplace=True)
 
     def _accumulate_Qs_data(self, period_data, kwargs):
+        if not period_data.has_Qs:
+            # Period does not have data. Skip it.
+            print(f"No Qs data for {period_data.name}")
+            return
+
         if 'check_ignored_fu' in kwargs:
             check_ignore = kwargs['check_ignored_fu']
             if check_ignore(period_data):
@@ -674,9 +815,10 @@ class Experiment:
         else:
             data = period_data.Qs_data
 
-        #print(period_data._Qs_dataset)
-        #print(data)
-        #assert(False)
+        if 'add_feed' in kwargs:
+            n = data.shape[0]
+            data['feed'] = period_data.feed_rate # kg/hr
+
         if self.accumulated_data is None:
             self.accumulated_data = data
         else:
@@ -688,6 +830,8 @@ class Experiment:
         # Likely won't be used unless you are updating the pickles
         for period_data in self.periods.values():
             period_data.save_data(loader, overwrite=overwrite)
+        if self._feed_dataset is not None:
+            self._feed_dataset.save_data(loader, overwrite)
 
     def wipe_data(self):
         # So I can pickle experiment objects without repickling the data
@@ -695,6 +839,8 @@ class Experiment:
         for period_data in self.periods.values():
             period_data.wipe_data()
         self.accumulated_data = None
+        if self._feed_dataset is not None:
+            self._feed_dataset.wipe_data()
 
     def _remove_datasets(self, names):
         # Remove datasets with the given names
@@ -734,4 +880,13 @@ class Experiment:
         for period_data in self.periods.values():
             period_data.reload_sieve_data(loader)
 
+    def reload_feed_data(self, loader):
+        # Load feed data from pickles.
+        if self._feed_dataset is not None:
+            self._feed_dataset.reload_data(loader)
 
+
+    # Attributes
+    @property
+    def feed_data(self):
+        return None if self._feed_dataset is None else self._feed_dataset.data

@@ -25,6 +25,7 @@ import global_settings as settings
 # or lighttable) and therefore defines it's own path in the constructor.
 
 class OmnipickleManager:
+
     def __init__(self, logger):
         self.logger = logger
         self.omnipickle_name = settings.omnipickle_name
@@ -80,12 +81,14 @@ class OmnipickleManager:
         for experiment in self.experiments.values():
             experiment._remove_datasets(names)
 
-    def reload_Qs_data(self, kwargs={}):
+
+    def reload_Qs_data(self, **acc_kwargs):
+        acc_kwargs = {} if acc_kwargs is None else acc_kwargs
         # reload Qs data
         for experiment in self.experiments.values():
             experiment.reload_Qs_data(self.omniloader)
             try:
-                experiment.accumulate_Qs_data(kwargs)
+                experiment.accumulate_Qs_data(acc_kwargs)
             except KeyError:
                 continue
 
@@ -114,8 +117,25 @@ class OmnipickleManager:
         for experiment in self.experiments.values():
             experiment.reload_sieve_data(self.omniloader)
 
+    def reload_feed_data(self):
+        # reload feed data
+        for experiment in self.experiments.values():
+            experiment.reload_feed_data(self.omniloader)
+
 
     # Used by the Qs secondary processor.
+    def manually_add_period(self, exp_code, limb, discharge, period_range, sort=True):
+        # args like '3B', 'falling', '62L', 't20-t40'
+        # Needed for periods that don't have Qs data.
+        period_data = PeriodData.make_empty(
+                exp_code, limb, discharge, period_range)
+
+        if exp_code not in self.experiments:
+            self.experiments[exp_code] = Experiment(exp_code)
+        self.experiments[exp_code].add_period_data(period_data)
+        if sort:
+            self.experiments[exp_code].sort_ranks()
+
     def Qs_build_experiment_tree(self, qs_picklepaths):
         # Use the Qs pickle filepaths from the secondary light table processor 
         # to build the experiment tree
@@ -225,6 +245,12 @@ class OmnipickleManager:
         add_sieve_fu = Experiment.add_sieve_data
         name = 'sieve'
         self.add_generic_data(add_sieve_fu, sieve_pickledir, sieve_data, name)
+
+    def add_feed_data(self, feed_pickledir, feed_data):
+        # Add the feed data to each experiment for extraction.
+        add_feed_fu = Experiment.add_feed_data
+        name = 'feed'
+        self.add_generic_data(add_feed_fu, feed_pickledir, feed_data, name)
 
     
     # Attributes

@@ -67,7 +67,7 @@ class PrimaryPickleProcessor:
     def __init__(self, output_txt=False):
         # File locations
         self.root_dir = settings.root_dir
-        self.pickle_source = settings.Qs_raw_pickels
+        self.pickle_source = settings.Qs_raw_pickles
         self.pickle_destination = settings.Qs_primary_pickles
         self.txt_destination = f"{self.root_dir}/combined-txts"
         self.log_filepath = "./log-files/Qs_primary_processor.txt"
@@ -712,6 +712,7 @@ class SecondaryPickleProcessor:
         crawler.end()
 
         self.omnimanager.Qs_build_experiment_tree(pkl_filepaths)
+        self.omnimanager.manually_add_period('3B', 'rising', '62L', 't20-t40')
 
     def load_data(self):
         self.omnimanager.reload_Qs_data()
@@ -738,15 +739,26 @@ class SecondaryPickleProcessor:
             period_data = experiment.periods[rank]
             #self.logger.write(f"Accumulating time for {period_data.Qs_pkl_name}")
 
+            if not period_data.has_Qs:
+                continue
+
             # Account for gaps in the periods
             if prev_period_data is not None:
                 gap = self.get_gap(period_data, prev_period_data)
-                accumulate += gap + 1
-                # +1 is so the last row of prev does not overlap with the first 
-                # row of next (index 0)
+                accumulate += gap
+                #accumulate += gap + 1
+                ## +1 is so the last row of prev does not overlap with the first 
+                ## row of next (index 0)
 
             # Calculate the new seconds column
-            seconds = period_data.Qs_data.index.values
+            #seconds = period_data.Qs_data.index.values
+            #start = seconds[0]
+            #if seconds[-1] - start + 1 != seconds.size:
+            #    # Something weird is happening with the timestamps
+            #    print(period_data.name)
+            #    assert(False)
+            #seconds += accumulate - start + 1
+            seconds = np.arange(period_data.Qs_data.index.values.size) + 1
             seconds += accumulate
             accumulate = seconds [-1]
 
@@ -778,6 +790,9 @@ class SecondaryPickleProcessor:
             #period_data.Qs_data.set_index('exp_time', inplace=True)
 
             # log some stuff
+            if not period_data.has_Qs:
+                continue
+
             new_index = np.round(period_data.Qs_data.index.values / 360)/10 #hrs
             first, last = [new_index[i] for i in (0, -1)]
             self.logger.write(f"{first}, {last}, {pkl_name_fu(period_data)}")
@@ -869,7 +884,6 @@ class TertiaryPickleProcessor:
 
 if __name__ == "__main__":
     # Run the script
-    root_dir = "/home/alex/feed-timing/data/extracted-lighttable-results"
     primary = PrimaryPickleProcessor(output_txt=True)
     primary.run()
     secondary = SecondaryPickleProcessor()

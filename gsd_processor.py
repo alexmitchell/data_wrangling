@@ -41,6 +41,8 @@ class GSDProcessor:
         self.logger.write("Updating experiment definitions")
         self.omnimanager.update_tree_definitions()
 
+        self.gsd_txt_filepaths = []
+
     def run(self):
         indent_function = self.logger.run_indented_function
 
@@ -54,6 +56,7 @@ class GSDProcessor:
                 before_msg="Updating omnipickle", after_msg="Finished!")
 
         indent_function(self.omnimanager.store,
+                kwargs={'overwrite':{'gsd':True}},
                 before_msg="Storing omnipickle", after_msg="Finished!")
 
         #print(self.omnimanager.experiments['1B'].periods[35].gsd_picklepath)
@@ -68,10 +71,15 @@ class GSDProcessor:
         # example filename: 3B-r87L-t60-8m_sta-2000_GrainSize.txt
         #crawler.end()
         #gsd_list_path = '/home/alex/feed-timing/code/matlab/supporting-files/2m_2B_final_gsd_list.txt'
-        gsd_list_path = '/home/alex/feed-timing/code/matlab/supporting-files/8m_final_gsd_list.txt'
-        with open(gsd_list_path) as f:
-            self.logger.write(f'Reading from {gsd_list_path}')
-            self.gsd_txt_filepaths = f.read().splitlines()
+        gsd_list_paths = [
+                '/home/alex/feed-timing/code/matlab/supporting-files/8m_final_gsd_list.txt',
+                '/home/alex/feed-timing/code/matlab/supporting-files/2m_final_gsd_list.txt',
+                ]
+                
+        for gsd_list_path in gsd_list_paths:
+            with open(gsd_list_path) as f:
+                self.logger.write(f'Reading from {gsd_list_path}')
+                self.gsd_txt_filepaths.extend(f.read().splitlines())
 
     def load_data(self):
         # Load all the GrainSize.txt files and combine
@@ -80,7 +88,6 @@ class GSDProcessor:
                 'header'    : 0,
                 'skiprows'  : [1],
                 }
-        self.all_data = pd.DataFrame
         run_data_frames = []
         for gsd_filepath in self.gsd_txt_filepaths:
             # Pull apart provided filepath to GrainSize.txt to get run info 
@@ -128,6 +135,17 @@ class GSDProcessor:
         self.all_data = pd.concat(run_data_frames, ignore_index=True)
         self.all_data.set_index(index_names, inplace=True)
         self.all_data.sort_index(inplace=True)
+
+        # Convert size classes from string to float to make consistent with 
+        # sieve data
+        col_conv = {
+                '0.5'  : 0.5 , '0.71' : 0.71, '1'    : 1   , '1.4'  : 1.41,
+                '2'    : 2   , '2.8'  : 2.83, '4'    : 4   , '5.6'  : 5.66,
+                '8'    : 8   , '11.3' : 11.2, '16'   : 16  , '22.6' : 22.3,
+                '32'   : 32  ,
+                }
+        self.all_data.columns = [col_conv[c] if c in col_conv else c \
+                for c in self.all_data.columns]
 
     def update_omnipickle(self):
         # Add gsd data to omnipickle

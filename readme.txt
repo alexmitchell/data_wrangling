@@ -78,7 +78,9 @@ comments and ideas:
   better. Each type of graph NEEDS its own specific plotting and formatting 
   code. Even if several different plots have similar code structure, it would 
   be impossible/impracticable to abstract it more. Some effort has been make to 
-  use general functions though.
+  use general functions though. It would be good to make the functions/argument 
+  style consistent. I kept switching between using kwargs, **kwargs, sticking 
+  kwargs in other kwargs, and other ways to pass information around.
 
 - It would be nice to abstract the Omnimanager from data types. That would make 
   the code more portable to other types of research, not just flume experiments 

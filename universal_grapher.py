@@ -74,17 +74,31 @@ class UniversalGrapher:
         self.omnimanager.restore()
 
         self.figure_destination = settings.figure_destination
+        self.figure_subdir = ''
+        self.figure_subdir_dict = {
+                'dem_stats'      : 'dem_stats',
+                'dem_subplots'   : 'dem_subplots',
+                'dem_variograms' : 'dem_variograms',
+                'depth'          : 'depth-based',
+                'lighttable'     : 'lighttable',
+                'trap'           : 'trap',
+                'feed_sieve'     : 'feed_sieve',
+                'gsd'            : 'gsd',
+                }
         ensure_dir_exists(self.figure_destination)
 
         self.ignore_steps = []
 
+        self.for_paper = True
+
     # General use functions
-    def generic_greeting(self, name, load_fu, plot_fu, plot_fu_kwargs=None):
+    def generic_make(self, name, load_fu, plot_fu, load_fu_kwargs=None, plot_fu_kwargs=None, fig_subdir=''):
         self.logger.write([f"Making {name} plots..."])
+        self.figure_subdir = self.figure_subdir_dict[fig_subdir]
 
         indent_function = self.logger.run_indented_function
 
-        indent_function(load_fu,
+        indent_function(load_fu, kwargs=load_fu_kwargs,
                 before_msg="Loading data", after_msg="Data Loaded!")
 
         indent_function(plot_fu, kwargs=plot_fu_kwargs,
@@ -95,7 +109,9 @@ class UniversalGrapher:
 
     def create_experiment_subplots(self, rows=4, cols=2):
         # So that I can create a standardized grid for the 8 experiments
-        fig, axs = plt.subplots(rows, cols, sharey=True, sharex=True, figsize=(16,10))
+        size = (12, 7.5) if self.for_paper else (16, 10)
+        fig, axs = plt.subplots(rows, cols, sharey=True, sharex=True,
+                figsize=size)
         return fig, axs
 
     def generate_rb_colors(self, n_colors):
@@ -113,31 +129,37 @@ class UniversalGrapher:
         half_n = max_n // 2
         def rgb_fu(n):
             # red high, blue ramps up then blue high, red ramps down
-            r = 1 if n < half_n else (max_n - n) / half_n
+            r = 1 if n <= half_n else (max_n - n) / half_n
             g = 0
             b = 1 if n > half_n else n / half_n
             return (r, g, b)
 
         return rgb_fu
 
-    def roll_data(self, data, roll_kwargs={}, plot_kwargs={}):
+    def roll_data(self, data, roll_kwargs={}):
         # Roll the data. Returns the generic rolled object for flexibility of 
         # what functions to call on the roll.
+        # data is a dataframe with columns for x and y values
+        roll_kwargs = roll_kwargs.copy()
 
-        # Get the function parameters
-        y_var = roll_kwargs.pop('y')
+        if isinstance(data, pd.Series):
+            [roll_kwargs.pop(key) for key in ['x', 'y'] if key in roll_kwargs]
+            series = data
+        else:
+            # Get the function parameters
+            x_var = roll_kwargs.pop('x')
+            y_var = roll_kwargs.pop('y')
 
-        # Get the data
-        time = data.loc[:, plot_kwargs['x']]
-        y = data.loc[:, y_var]
+            # Get the data
+            x = data.loc[:, x_var]
+            y = data.loc[:, y_var]
 
-        # Convert to a series
-        series = pd.Series(data=y.values, index=time)
+            # Convert to a series
+            series = pd.Series(data=y.values, index=x)
 
         # Roll it
         rolled_data = series.rolling(**roll_kwargs)
 
-        roll_kwargs['y'] = y_var # Add it back into kwargs
         return rolled_data
 
     def _calc_retrended_slope(self, data, flume_elevations=None, intercept=None):
@@ -201,7 +223,7 @@ class UniversalGrapher:
         return pd.Series(out, name=profile_name)
 
     def save_figure(self, figure_name):
-        filepath = ospath_join(self.figure_destination, figure_name)
+        filepath = ospath_join(self.figure_destination, self.figure_subdir, figure_name)
         self.logger.write(f"Saving figure to {filepath}")
         plt.savefig(filepath, orientation='landscape')
 
@@ -239,6 +261,8 @@ class UniversalGrapher:
         for group_data in groups:
             self._time_plot_prep(group_data, plot_kwargs)
 
+        plot_kwargs['ax'].set_ylabel('')
+
     def _time_plot_prep(self, data, plot_kwargs, auto_plot=True):
         # For plotting data where 'exp_time' is in the index as minutes
         df = data.reset_index()
@@ -254,7 +278,11 @@ class UniversalGrapher:
 
     def _generic_df_plot(self, df, plot_kwargs):
         # Plot dataframe with some default formatting
-        df.plot(**plot_kwargs)
+        try:
+            df.plot(**plot_kwargs)
+        except TypeError:
+            # No values to plot, skip it
+            pass
         plot_kwargs['ax'].get_xaxis().get_label().set_visible(False)
         plot_kwargs['ax'].tick_params(
                 bottom=True, top=True, left=True, right=True)
@@ -275,9 +303,11 @@ class UniversalGrapher:
 
             plot_kwargs['ax'] = ax
             experiment = self.omnimanager.experiments[exp_code]
-            ax.set_title(f"Experiment {exp_code} {experiment.name}")
+            ax.set_title(f"{exp_code} {experiment.name}")
 
             plot_fu(exp_code, data, plot_kwargs)
+
+            self.plot_2B_X(exp_code, ax)
 
         post_plot_fu(fig, axs, plot_kwargs)
 
@@ -290,41 +320,396 @@ class UniversalGrapher:
         # Must add xlabel, ylabel, and title to fig_kwargs
         x = plot_kwargs['x']
         y = plot_kwargs['y']
-        xlabel = fig_kwargs.pop('xlabel') # Common xlabel
-        ylabel = fig_kwargs.pop('ylabel') # Common ylabel
-        title_str = fig_kwargs.pop('title') # Common title
+        xlabel = fig_kwargs['xlabel'] # Common xlabel
+        ylabel = fig_kwargs['ylabel'] # Common ylabel
+        title_str = fig_kwargs['title'] # Common title
         plot_labels = [] if 'legend_labels' not in fig_kwargs \
-                else fig_kwargs.pop('legend_labels') # Common legend labels
+                else fig_kwargs['legend_labels'] # Common legend labels
 
         # Set the spacing and area of the subplots
         fig.tight_layout()
-        fig.subplots_adjust(top=0.9, left=0.10, bottom=0.075, right=0.90)
+        if self.for_paper:
+            # Minimize whitespace
+            # leave out title and legend
+            # Larger font so it is readable in pdf
 
-        fontsize = 16
+            fig.subplots_adjust(top=0.95, left=0.075, bottom=0.075, right=0.99)
+            fontsize = 25
+            
+            # Set common x label
+            fig.text(0.5, 0.01, xlabel, ha='center', usetex=True,
+                    fontsize=fontsize)
 
-        if len(plot_labels) > 1:
-            # Format the common legend if there is more than one y
-            ax0_lines = axs[0,0].get_lines()
-            fig.legend(handles=ax0_lines, labels=plot_labels,
-                    loc='center right')
+            # Set common y label
+            rotation = fig_kwargs['ylabel_rotation'] if 'ylabel_rotation' in fig_kwargs else 'vertical'
+            fig.text(0.01, 0.5, ylabel, va='center', usetex=True,
+                    fontsize=fontsize, rotation=rotation)
+        else:
+            fig.subplots_adjust(top=0.9, left=0.10, bottom=0.075, right=0.90)
+            fontsize = 16
 
-        # Set common x label
-        fig.text(0.5, 0.01, xlabel, ha='center', usetex=True,
-                fontsize=fontsize)
+            if len(plot_labels) > 1:
+                # Format the common legend if there is more than one y
+                ax0_lines = axs[0,0].get_lines()
+                fig.legend(handles=ax0_lines, labels=plot_labels,
+                        loc='center right')
 
-        # Set common y label
-        fig.text(0.01, 0.5, ylabel, va='center', usetex=True,
-                fontsize=fontsize, rotation='vertical')
+            # Set common x label
+            fig.text(0.5, 0.01, xlabel, ha='center', usetex=True,
+                    fontsize=fontsize)
+
+            # Set common y label
+            rotation = fig_kwargs['ylabel_rotation'] if 'ylabel_rotation' in fig_kwargs else 'vertical'
+            fig.text(0.01, 0.5, ylabel, va='center', usetex=True,
+                    fontsize=fontsize, rotation=rotation)
+            
+            # Make a title
+            plt.suptitle(title_str, fontsize=fontsize, usetex=True)
+
+    def generic_set_grid(self, ax, **kwargs):
+        # Use a consistent format for the grids
+        # This makes the major grid a light grey and only shows the minor ticks 
+        # on the x axis
+        if 'xticks_minor' in kwargs and kwargs['xticks_minor']:
+            minor_locator = mpl.ticker.AutoMinorLocator(2)
+            ax.xaxis.set_minor_locator(minor_locator)
+            ax.tick_params(axis='x', which='minor', top=True, bottom=True)
+        if 'yticks_minor' in kwargs and kwargs['yticks_minor']:
+            minor_locator = mpl.ticker.AutoMinorLocator(2)
+            ax.yaxis.set_minor_locator(minor_locator)
+            ax.tick_params(axis='y', which='minor', left=True, right=True)
+        ax.grid(True, which='major', color='#d6d6d6')
+        #plot_kwargs['ax'].grid(True, which='minor', color='#f2f2f2', axis='x')
+        ax.set_axisbelow(True)
+
+    def draw_feed_Di(self, ax, Di, zorder=1):
+        # Di like 'D50'
+        assert(Di in settings.sum_feed_Di)
+        kwargs = {'c' : 'k', 'linestyle' : '--',
+                'label' : self.get_feed_Di_label(Di), # -> Feed D_50
+            }
+        if zorder is not None:
+            kwargs['zorder'] = zorder
+        ax.axhline(settings.sum_feed_Di[Di], **kwargs)
+
+    def get_feed_Di_label(self, Di):
+        return rf"Feed $D_{{{Di[1:]}}}$"
+
+    def plot_distribution(self, distribution, is_frac=True, ax=None, **kwargs):
+        if not is_frac:
+            distribution = distribution.cumsum() / distribution.sum()
+        if ax is None:
+            fig = plt.figure()
+            ax = plt.gca()
+        distribution.plot(ax=ax, logx=True)
+        index = distribution.index.values
+        if 'hlines' in kwargs:
+            [ax.axhline(y) for y in kwargs['hlines']]
+
+        ax.xaxis.set_major_formatter(mpl.ticker.FixedFormatter(index))
+        ax.xaxis.set_major_locator(mpl.ticker.FixedLocator(index))
+        ax.yaxis.set_major_formatter(mpl.ticker.FixedFormatter(np.arange(11) / 10))
+        ax.yaxis.set_major_locator(mpl.ticker.FixedLocator(np.arange(11) / 10))
+        ax.minorticks_off()
+        ax.set_ylim((0,1.01))
+        ax.set_ylabel(f"Fraction less than")
+        self.generic_set_grid(ax)
+
+        if 'title' in kwargs:
+            ax.set_title(kwargs['title'])
+
+    def plot_2B_X(self, exp_code, ax):
+        # Puts a big X over the 2B plot so people aren't confused
+        if exp_code != '2B':
+            return
+        for i in [0,1]:
+            #line = mpl.lines.Line2D([0, 1], [i, abs(i-1)],
+            #        lw=2, color='k', alpha=0.75)
+            #line.set_clip_on(False)
+            #ax.add_line(line)
+            ax.plot([0, 1], [i, abs(i-1)], transform=ax.transAxes,
+                    lw=2, color='k')
+
+
+    # Plotting functions that cross genres
+    def make_pseudo_hysteresis_plots(self, y_name='D50', plot_2m=True):
+        #reload_kwargs = {
+        #    'check_ignored_fu' : \
+        #        lambda period_data: period_data.step == 'rising-50L',
+        #}
+        if y_name in ['Bedload all', 'D50', 'D84']:
+            reload_fu = self.omnimanager.reload_Qs_data
+            fig_subdir = 'lighttable'
+        elif y_name in ['depth', 'slope']:
+            reload_fu = self.omnimanager.reload_depth_data
+            fig_subdir = 'depth'
+        else:
+            raise NotImplementedError
+
+        self.generic_make(f"pseudo hysteresis",
+                reload_fu, self.plot_pseudo_hysteresis,
+                #load_fu_kwargs=reload_kwargs,
+                plot_fu_kwargs={'y_name':y_name, 'plot_2m':plot_2m},
+                fig_subdir=fig_subdir)
+
+    def plot_pseudo_hysteresis(self, y_name='D50', plot_2m=True):
+        # Do stuff before plot loop
+        x_name = 'pseudo discharge'
+        #y_name = 'Bedload all'
+        #y_name = 'D50'
+        #y_name = 'D84'
+        roll_window = 10 #minutes
+        #
+        # note: plot_2m Only works for data with stationing (eg. depth data)
+
+        plot_kwargs = {
+                'x'      : x_name,
+                'y'      : y_name,
+                'kind'   : 'line',
+                #'legend' : True,
+                'legend' : False,
+                #'xlim' : (-0.25, 8.25),
+                #'ylim' : (0, settings.lighttable_bedload_cutoff), # for use without logy
+                #'logy' : True,
+                #'ylim' : (0.001, settings.lighttable_bedload_cutoff), # for use with logy
+                }
+
+        rolling_kwargs = {
+                'x'           : 'exp_time_hrs',
+                'y'           : y_name,
+                'window'      : roll_window*60, # seconds
+                'min_periods' : 20,
+                'center'      : True,
+                #'on'          : plot_kwargs['x'],
+                }
+        # Add to plot_kwargs as a hacky way to get info to _plot function
+        plot_kwargs['rolling_kwargs'] = rolling_kwargs
+        plot_kwargs['plot_2m'] = plot_2m
+
+        if y_name in ['Bedload all', 'D50', 'D84']:
+            gather_kwargs = {
+                    #'ignore_steps' : ['rising-50L']
+                    }
+            all_data = self.gather_Qs_data(gather_kwargs)
+            if y_name in ['D50', 'D84']:
+                # Gather the sieve data Di for plotting
+                all_sieve_data = self.gather_sieve_data({})
+                plot_kwargs['sieve_data'] = all_sieve_data
+        elif y_name in ['depth', 'slope']:
+            gather_kwargs = {
+                    'new_index' : ['exp_time', 'location'],
+                    }
+            all_data = self.gather_depth_data(gather_kwargs)
+        else:
+            raise NotImplementedError
+
+        filename_y_col = y_name.replace(' ', '-').lower()
+        logy_str = '_logy' if 'logy' in plot_kwargs and plot_kwargs['logy'] else ''
+        plot_2m_str = '_2m' if plot_2m else ''
+        figure_name = f"pseudo_hysteresis{plot_2m_str}_{filename_y_col}" + \
+                      f"_roll-{roll_window}min{logy_str}.png"
+
+        # Start plot loop
+        self.generic_plot_experiments(
+            self._plot_pseudo_hysteresis, self._format_pseudo_hysteresis, 
+            all_data, plot_kwargs, figure_name, subplot_shape=(2,4))
+
+    def _plot_pseudo_hysteresis(self, exp_code, all_data, plot_kwargs):
+        # Pull out some kwargs variables
+        y_name = plot_kwargs['y']
+        x_name = plot_kwargs['x']
+        ax = plot_kwargs['ax']
+        plot_kwargs = plot_kwargs.copy()
+        rolling_kwargs = plot_kwargs.pop('rolling_kwargs')
+        plot_2m = plot_kwargs.pop('plot_2m')
+
+        exp_data = all_data[exp_code]
+        if y_name in ['Bedload all', 'D50', 'D84']:
+            # Based on Qs data
+            data = exp_data[exp_data['discharge'] != 50]
+            try:
+                sieve_data = plot_kwargs.pop('sieve_data')[exp_code]
+            except KeyError:
+                sieve_data = None
+
+            # Roll it
+            roll_y_var = rolling_kwargs['y']
+            rolled =  self.roll_data(data, rolling_kwargs)
+            data = data.assign(roll_mean=rolled.mean().values)
+            plot_kwargs['y'] = 'roll_mean'
+
+        elif y_name in ['depth', 'slope']:
+            # Based on depth data
+            sta_min, sta_max = (4.5, 6.5) if plot_2m else (0, 8)
+            sta_keep = [s for s in exp_data.columns if sta_min <= s <= sta_max]
+            if y_name == 'depth':
+                data = exp_data.xs(y_name, level='location').loc[:, sta_keep]
+                avg_depths = data.mean(axis=1)
+                data.loc[:, y_name] = avg_depths
+            elif y_name == 'slope':
+                # Assume water surface slope
+                cm2m = 1/100
+                surface_data = exp_data.xs('surface', level='location') *cm2m
+                keep_data = surface_data.loc[:, sta_keep]
+                notnull = keep_data.notnull()
+                keep_data[notnull.sum(axis=1) <=3] = np.nan # require > 3 pts
+                ols_out, flume_elevations = self._calc_retrended_slope(
+                        keep_data, None, None)
+                data = ols_out
+        else:
+            raise NotImplementedError
+
+        # Fold time in half around the peak using 'exp_time_hrs'
+        peak_time = 4.5 # hrs
+        exp_time_name = 'exp_time'
+        exp_time_hrs_name = 'exp_time_hrs'
+        if exp_time_hrs_name in data.columns:
+            pass
+        elif exp_time_name == data.index.name:
+            # Make new column based on index
+            data.loc[:, exp_time_hrs_name] = data.index / 60
+        else:
+            raise NotImplementedError
+
+        exp_time_hrs = data[exp_time_hrs_name]
+        assert(exp_time_hrs.iloc[-1] <= 8.0) # Otherwise not peak_time invalid
+        data['pseudo discharge'] = peak_time - np.fabs(exp_time_hrs - peak_time)
+
+        # Split data into limbs
+        rising = data[data[exp_time_hrs_name] <= peak_time]
+        falling = data[data[exp_time_hrs_name] >= peak_time]
+
+        # Print some mass stats if applicable
+        if y_name == 'Bedload all':
+            rising_sum = rising[roll_y_var].sum() / 1000 # kg
+            falling_sum = falling[roll_y_var].sum() / 1000 # kg
+            limb_ratio = rising_sum / falling_sum
+
+            self.logger.write([f"Rising sum = {rising_sum:3.0f} kg",
+                f"Falling sum = {falling_sum:3.0f} kg",
+                f"Rising/falling = {limb_ratio:3.2f}"],
+                local_indent=1)
+
+        ## print latex table row
+        #print(f" {exp_code} & {rising_sum:3.0f} & {falling_sum:3.0f} & {limb_ratio:3.2f} \\\\")
+
+        # Grab the default pyplot colors
+        prop_cycle = plt.rcParams['axes.prop_cycle']
+        colors = prop_cycle.by_key()['color']
+        rising_color, falling_color = colors[0:2]
+
+        # Not actually grouped, but can still use self.plot_group
+        plot_kwargs['color'] = rising_color
+        self.plot_group(rising, plot_kwargs)
+        plot_kwargs['color'] = falling_color
+        self.plot_group(falling, plot_kwargs)
         
-        # Make a title
-        plt.suptitle(title_str, fontsize=fontsize, usetex=True)
+        # Draw the feed Di if applicable
+        if y_name in ['D50', 'D84']:
+            self.draw_feed_Di(ax, y_name)
+            
+            # Plot the sieve data Di if applicable
+            sieve_data[y_name] = self.calc_Di(sieve_data, target_Di=y_name)
+
+            sieve_data.reset_index(inplace=True)
+            sieve_exp_time_hrs = sieve_data['exp_time'] / 60
+            assert(sieve_exp_time_hrs.iloc[-1] == 8.0)
+            sieve_folded_hrs = peak_time - np.fabs(sieve_exp_time_hrs - peak_time)
+            sieve_data['pseudo discharge'] = sieve_folded_hrs
+
+            sieve_plot_kwargs = {
+                    'x'      : 'exp_time' if x_name == 'exp_time_hrs' else x_name,
+                    'y'      : y_name,
+                    'label'  : rf"Trap {y_name}",
+                    'ax'     : ax,
+                    'legend' : False,
+                    'marker' : '*',
+                    'markersize': 7,
+                    'linestyle' : 'None',
+                    }
+            sieve_rising = sieve_data[sieve_exp_time_hrs <= peak_time]
+            sieve_falling = sieve_data[sieve_exp_time_hrs > peak_time]
+
+            sieve_plot_kwargs['color'] = rising_color
+            self.plot_group(sieve_rising, sieve_plot_kwargs)
+            sieve_plot_kwargs['color'] = falling_color
+            self.plot_group(sieve_falling, sieve_plot_kwargs)
+
+        # Turn on the grid
+        self.generic_set_grid(ax, yticks_minor=True)
+
+        # Set the tick marks
+        ax.set_xlim((1, peak_time))
+        ticker = mpl.ticker
+        ax.xaxis.set_major_locator(ticker.FixedLocator(range(5)))
+        ax.tick_params(axis='x', which='major', top=True, bottom=True)
+        ax.xaxis.set_major_formatter(ticker.NullFormatter())
+
+        # Turn off minor axis ticks
+        ax.tick_params(axis='x', which='minor', top=False, bottom=False)
+
+        #text_locations = np.concatenate([np.arange(4) + 0.5, [4.25]])
+
+        ##for xloc, label in zip(text_locations, text_labels):
+        ##    ax.text(xloc, 0, label)
+        #text_labels = mpl.ticker.FixedFormatter([rf'${d}L/s$' for d in [50, 62, 75, 87, 100]])
+        #ax.xaxis.set_major_formatter(text_labels)
+        #ax.xaxis.OFFSETTEXTPAD = 100
+        ##ax.tick_params(pad=15)
+
+        #ax.grid(True, which='major', color='#d6d6d6')
+        #plot_kwargs['ax'].grid(True, which='minor', color='#f2f2f2', axis='x')
+        #ax.set_axisbelow(True)
+
+    def _format_pseudo_hysteresis(self, fig, axs, plot_kwargs):
+        # Format the figure after the plot loop
+        fig_kwargs = {
+                'xlabel'        : r"Pseudo discharge",
+                'legend_labels' : [r"Rising", "Falling"],
+                }
+
+        y_name = plot_kwargs['y']
+        if y_name == 'Bedload all': 
+            fig_kwargs['ylabel'] = r"Bedload transport (g/s)"
+            fig_kwargs['title'] = r"Pseudo hysteresis of bedload transport"
+        elif y_name in ['D50', 'D84']: 
+            Di = plot_kwargs['y']
+            fig_kwargs['ylabel'] = rf"$D_{{ {Di[1:]} }}$ (mm)"
+            fig_kwargs['title'] = rf"Pseudo hysteresis of {Di}"
+            fig_kwargs['legend_labels'].append(self.get_feed_Di_label(Di))
+        elif y_name == 'depth':
+            fig_kwargs['ylabel'] = rf"Depth (cm)"
+            fig_kwargs['title'] = rf"Pseudo hysteresis of depth"
+        elif y_name == 'slope':
+            fig_kwargs['ylabel'] = rf"Slope (m/m)"
+            fig_kwargs['title'] = rf"Pseudo hysteresis of slope"
+        else:
+            raise NotImplementedError
+        self.format_generic_figure(fig, axs, plot_kwargs, fig_kwargs)
+
+        ticker = mpl.ticker
+        for ax in axs[-1]:
+            # Set the major tick length
+            default_length = ax.xaxis.get_major_ticks()[0].get_tick_padding()
+            ax.tick_params(axis='x', which='major', bottom=True, top=False,
+                    length=default_length * 3)
+            
+            # Set the minor tick locations
+            text_locations = np.concatenate([np.arange(4) + 0.5, [4.25]])
+            text_locator = ticker.FixedLocator(text_locations)
+            ax.xaxis.set_minor_locator(text_locator)
+
+            # Set the minor tick labels
+            text_formats = [rf'${d}L/s$' for d in [50, 62, 75, 87, 100]]
+            text_formatter = ticker.FixedFormatter(text_formats)
+            ax.xaxis.set_minor_formatter(text_formatter)
 
 
     # Functions to plot only dem data
     def make_dem_subplots(self):
-        self.generic_greeting("dem semivariogram",
+        self.generic_make("dem semivariogram",
                 self.omnimanager.reload_dem_data,
-                self.plot_dem_subplots)
+                self.plot_dem_subplots, fig_subdir='dem_subplots')
 
     def plot_dem_subplots(self):
         # Can't use the generic_plot_experiments function because of the way I 
@@ -406,16 +791,15 @@ class UniversalGrapher:
             # Save the figure
             filename = filename_base.format(exp_code)
             self.logger.write(f"Saving {filename}")
-            partial_filepath = ospath_join("dem_subplots", filename)
-            self.save_figure(partial_filepath)
+            self.save_figure(filename)
 
             #plt.show()
 
 
     def make_dem_semivariogram_plots(self):
-        self.generic_greeting("dem semivariogram",
+        self.generic_make("dem semivariogram",
                 self.omnimanager.reload_dem_data,
-                self.plot_dem_semivariograms)
+                self.plot_dem_semivariograms, figure_subdir='dem_variograms')
 
     def plot_dem_semivariograms(self):
         # Semivariogram are based on Curran Waters 2014
@@ -524,8 +908,7 @@ class UniversalGrapher:
             # Save the figure
             filename = filename_base.format(exp_code)
             self.logger.write(f"Saving {filename}")
-            partial_filepath = "dem_variograms/" + filename
-            self.save_figure(partial_filepath)
+            self.save_figure(filename)
 
             break
 
@@ -664,9 +1047,9 @@ class UniversalGrapher:
 
 
     def make_dem_stats_plots(self):
-        self.generic_greeting("dem stats time",
+        self.generic_make("dem stats time",
                 self.omnimanager.reload_dem_data,
-                self.plot_dem_stats)
+                self.plot_dem_stats, figure_subdir='dem_stats')
 
     def plot_dem_stats(self):
         # Stats are based on Curran Waters 2014
@@ -747,8 +1130,6 @@ class UniversalGrapher:
 
     def _calc_dem_stats(self, exp_code, dem_data, kwargs={}):
         # Calculate the four different statistics from Curran Waters 2014
-        m2cm = 100
-        cm2m = 1/100
 
         # Keep ordered lists of the keys and resulting data
         # Will be converted later to pandas dataframe with multiindex
@@ -861,9 +1242,6 @@ class UniversalGrapher:
     def _plot_dem_roughness(self, exp_code, dem_data, plot_kwargs):
         # Do stuff during plot loop
         # Plot an experiment
-        m2cm = 100
-        cm2m = 1/100
-
         key_limb = []
         key_discharge = []
         key_time = []
@@ -992,8 +1370,6 @@ class UniversalGrapher:
     def _plot_loc_shear(self, exp_code, depth_data, plot_kwargs):
         # Do stuff during plot loop
         # Plot an experiment
-        m2cm = 100
-        cm2m = 1/100
         ax = plot_kwargs['ax']
 
         draw_box = False
@@ -1133,8 +1509,6 @@ class UniversalGrapher:
     def _plot_flume_shear(self, exp_code, depth_data, plot_kwargs):
         # Do stuff during plot loop
         # Plot an experiment
-        m2cm = 100
-        cm2m = 1/100
         ax = plot_kwargs['ax']
 
         # Get the data
@@ -1178,21 +1552,17 @@ class UniversalGrapher:
         self.format_generic_figure(fig, axs, plot_kwargs, fig_kwargs)
 
 
-    def make_avg_slope_plots(self):
-        self.logger.write([f"Making flume-averaged slope time plots..."])
+    def make_avg_slope_plots(self, plot_2m=True, plot_trends='both'):
+        plot_fu_kwargs = {
+                'plot_2m' : plot_2m,
+                'plot_trends' : plot_trends,
+                }
+        self.generic_make("slope",
+                self.omnimanager.reload_depth_data,
+                self.plot_avg_slope, plot_fu_kwargs=plot_fu_kwargs,
+                fig_subdir='depth')
 
-        indent_function = self.logger.run_indented_function
-
-        indent_function(self.omnimanager.reload_depth_data,
-                before_msg="Loading data", after_msg="Data Loaded!")
-
-        indent_function(self.plot_avg_slope,
-                before_msg=f"Plotting slope vs time",
-                after_msg="Finished Plotting!")
-
-        self.logger.end_output()
-
-    def plot_avg_slope(self):
+    def plot_avg_slope(self, plot_2m=True, plot_trends='both'):
         # Do stuff before plot loop
         x_name = 'exp_time'
         y_name = 'slope'
@@ -1202,16 +1572,21 @@ class UniversalGrapher:
                 #'kind'   : 'scatter',
                 'legend' : False,
                 }
+
+        # Add to plot_kwargs as a hacky way to get info to _plot function
+        plot_kwargs['plot_2m'] = plot_2m
+        plot_kwargs['plot_trends'] = plot_trends
+
         depth_gather_kwargs = {
                 'new_index' : ['exp_time', 'location'],
                 }
 
         depth_data = self.gather_depth_data(depth_gather_kwargs)
-        exp_codes = list(depth_data.keys())
 
         filename_x = x_name.replace('_', '-').lower()
         filename_y = y_name.replace('_', '-').lower()
-        figure_name = f"comp_avg-slope_v_{filename_x}.png"
+        plot_2m_str = '2m_' if plot_2m else ''
+        figure_name = f"{plot_2m_str}avg-slope_v_{filename_x}.png"
 
         # Start plot loop
         self.generic_plot_experiments(
@@ -1219,30 +1594,92 @@ class UniversalGrapher:
             depth_data, plot_kwargs, figure_name)
 
     def _plot_avg_slope(self, exp_code, depth_data, plot_kwargs):
-        # Do stuff during plot loop
+        ax = plot_kwargs['ax']
+        plot_kwargs = plot_kwargs.copy()
+        plot_2m = plot_kwargs.pop('plot_2m')
+        plot_trends = plot_kwargs.pop('plot_trends')
 
-        m2cm = 100
         cm2m = 1/100
 
         # Get the data
         exp_data = depth_data[exp_code] * cm2m
         #stats_data_frames = {}
 
+        sta_min, sta_max = (4.5, 6.5) if plot_2m else (0, 8)
+        sta_keep = [s for s in exp_data.columns if sta_min <= s <= sta_max]
+
         init_bed_height = settings.init_bed_height * cm2m
         flume_elevations = None
 
         #slice_all = slice(None)
-        for location in ['surface', 'bed']:
-            data = exp_data.xs(location, level='location')
-            #data = exp_data.loc[(slice_all, location), :]
+        plot_locations = ['surface', 'bed'] if plot_trends == 'both' else [plot_trends]
+        for location in plot_locations:
+            loc_data = exp_data.xs(location, level='location')
+            data = loc_data.loc[:, sta_keep]
+            notnull = data.notnull()
+            data[notnull.sum(axis=1) <=3] = np.nan # require > 3 pts
 
-            intercept = init_bed_height if location == 'bed' else None
+            if plot_2m:
+                intercept = None
+            elif location == 'bed':
+                # Fix intercept to flume lip
+                intercept = init_bed_height
+            elif location == 'surface':
+                # Fix intercept to flume lip + water depth at sta 2 m
+                #raise NotImplementedError
+                #depth = exp_data.xs('depth', level='location')
+                #last_depth = depth.loc[:, 2.0]
+                #print(last_depth)
+                #assert(False)
+                #intercept = init_bed_height + last_depth
+                intercept = None
+            else:
+                assert(False)
+
             #stats_data_frames[location] = ols_out
             
             ols_out, flume_elevations = self._calc_retrended_slope(data, flume_elevations, intercept)
+            ### NOTE 2m slope is very chaotic.
+            ### 8m slope seems to be more reliable.
+            #if exp_code != '1A':
+            #    ols_out2, flume_elevations2 = self._calc_retrended_slope(loc_data, None, intercept)
+            #    t = 270
+            #    for t in ols_out.index.values:
+            #        plt.figure()
+            #        ax = plt.gca()
+
+            #        # plot all z
+            #        t_z = (loc_data.loc[t, :])
+            #        true_z = t_z + flume_elevations2
+            #        plt.plot(true_z.index.values, true_z.values, 'o',
+            #                linestyle='None')
+
+            #        # plot overall s
+            #        all_s = (ols_out2.loc[t, 'slope'])
+            #        all_b = (ols_out2.loc[t, 'intercept'])
+            #        all_cols = loc_data.columns.values
+            #        all_x = [all_cols[0], all_cols[-1]]
+            #        all_y  = [all_s*x + all_b for x in all_x]
+            #        plt.plot(all_x, all_y)
+            #        
+            #        # plot local s
+            #        local_s = (ols_out.loc[t, 'slope'])
+            #        local_b = (ols_out.loc[t, 'intercept'])
+            #        local_cols = data.columns.values
+            #        local_x = [local_cols[0], local_cols[-1]]
+            #        local_y  = [local_s*x + local_b for x in local_x]
+            #        plt.plot(local_x, local_y)
+
+            #        ax.set_xlim((2,8))
+            #        ax.set_ylim((0.3, 0.45))
+            #        print(local_s, all_s)
+            #        plt.show()
+            #    #assert(False)
             # Not actually grouped, but can still use self.plot_group
             self.plot_group(ols_out, plot_kwargs)
 
+        ax.locator_params(axis='y', steps=[4, ], min_n_ticks=3)
+        self.generic_set_grid(ax)
         #stats_data = pd.concat(stats_data_frames,
         #        names=['location', 'exp_time'])
         #grouped = stats_data.groupby(level='location')
@@ -1259,21 +1696,13 @@ class UniversalGrapher:
         self.format_generic_figure(fig, axs, plot_kwargs, fig_kwargs)
 
 
-    def make_avg_depth_plots(self):
-        self.logger.write([f"Making flume-averaged depth time plots..."])
+    def make_avg_depth_plots(self, plot_2m=True):
+        self.generic_make("depth",
+                self.omnimanager.reload_depth_data,
+                self.plot_avg_depth, plot_fu_kwargs={'plot_2m' : plot_2m},
+                fig_subdir='depth')
 
-        indent_function = self.logger.run_indented_function
-
-        indent_function(self.omnimanager.reload_depth_data,
-                before_msg="Loading data", after_msg="Data Loaded!")
-
-        indent_function(self.plot_avg_depth,
-                before_msg=f"Plotting depth vs time",
-                after_msg="Finished Plotting!")
-
-        self.logger.end_output()
-
-    def plot_avg_depth(self):
+    def plot_avg_depth(self, plot_2m=True):
         # Do stuff before plot loop
         x_name = 'exp_time'
         y_name = 'depth'
@@ -1283,17 +1712,21 @@ class UniversalGrapher:
                 #'kind'   : 'scatter',
                 'legend' : False,
                 }
+
+        # Add to plot_kwargs as a hacky way to get info to _plot function
+        plot_kwargs['plot_2m'] = plot_2m
+
         depth_gather_kwargs = {
                 'new_index' : ['exp_time', 'location'],
                 }
 
         depth_data = self.gather_depth_data(depth_gather_kwargs)
-        exp_codes = list(depth_data.keys())
 
         filename_x = x_name.replace('_', '-').lower()
         filename_y = y_name.replace('_', '-').lower()
         #figure_name = f"box_flume-depth_v_{filename_x}.png"
-        figure_name = f"flume-depth_v_{filename_x}.png"
+        plot_2m_str = '2m_' if plot_2m else ''
+        figure_name = f"{plot_2m_str}flume-depth_v_{filename_x}.png"
 
         # Start plot loop
         self.generic_plot_experiments(
@@ -1302,20 +1735,65 @@ class UniversalGrapher:
 
     def _plot_avg_depth(self, exp_code, depth_data, plot_kwargs):
         # Do stuff during plot loop
+        ax = plot_kwargs['ax']
+        plot_kwargs = plot_kwargs.copy()
+        plot_2m = plot_kwargs.pop('plot_2m')
 
         draw_boxplot = False
+        sta_min, sta_max = (4.5, 6.5) if plot_2m else (0, 8)
 
         # Get the data
         exp_data = depth_data[exp_code]
-        depth = exp_data.xs('depth', level='location')
+        sta_keep = [s for s in exp_data.columns if sta_min <= s <= sta_max]
+        all_depths = exp_data.xs('depth', level='location')
+        depths = all_depths.loc[:, sta_keep]
+
         if draw_boxplot:
-            depth.T.boxplot(ax=plot_kwargs['ax'], showfliers=False)
+            depths.T.boxplot(ax=plot_kwargs['ax'], showfliers=False)
         else:
-            avg_depths = depth.mean(axis=1)
+            avg_depths = depths.mean(axis=1)
             avg_depths.rename('depth', inplace=True)
 
-            # Not actually grouped, but can still use self.plot_group
+            # Plot depth values in background
+            d_kwargs = {'x' : plot_kwargs['x'], 'ax' : ax,
+                    'linestyle' : 'None', 'legend' : False,
+                    'marker' : '.', 'color' : 'silver'}
+            self.plot_group(depths, d_kwargs)
+
+            # Plot avg depth
             self.plot_group(avg_depths, plot_kwargs)
+            #ax.set_xlim((0,8))
+
+            ### NOTE 2m depths are reasonably close the average depth
+            #if exp_code != '1A':
+            #    for t in depths.index.values:
+            #        plt.figure()
+            #        ax = plt.gca()
+
+            #        local_tz = depths.loc[t, :]
+            #        all_tz = all_depths.loc[t, :]
+
+            #        # plot all z
+            #        plt.plot(all_tz.index.values, all_tz.values, 'o',
+            #                linestyle='None')
+
+            #        # plot all avg z
+            #        all_avg = all_tz.mean()
+            #        ax.axhline(all_avg)
+
+            #        # plot local avg
+            #        local_avg = local_tz.mean()
+            #        local_cols = depths.columns.values
+            #        local_x = [local_cols[0], local_cols[-1]]
+            #        local_y  = [local_avg, local_avg]
+            #        plt.plot(local_x, local_y)
+
+            #        print(f"{t}: {all_avg:0.2f}, {local_avg:0.2f}")
+            #        ax.set_xlim((2, 8))
+            #        ax.set_ylim((3, 15))
+            #        plt.show()
+
+            self.generic_set_grid(ax)
 
     def _format_avg_depth(self, fig, axs, plot_kwargs):
         # Format the figure after the plot loop
@@ -1328,10 +1806,65 @@ class UniversalGrapher:
         self.format_generic_figure(fig, axs, plot_kwargs, fig_kwargs)
 
 
+    def make_simple_feed_plots(self):
+        self.generic_make("feed",
+                self.omnimanager.reload_feed_data,
+                self.plot_simple_feed_plots, fig_subdir='feed_sieve')
+
+    def plot_simple_feed_plots(self):
+        # Can't use the generic_plot_experiments function
+        plot_kwargs = {
+                }
+
+        feed_data_dict = {}
+        for exp_code in self.omnimanager.experiments.keys():
+            experiment = self.omnimanager.experiments[exp_code]
+
+            data = experiment.feed_data
+            if data is None:
+                continue
+            for sample in data.index:
+                feed_data_dict[(exp_code, sample)] = data.loc[sample, :].copy()
+        feed_data = pd.DataFrame.from_dict(feed_data_dict)
+        
+        cumsum = feed_data.cumsum()
+        frac = cumsum / feed_data.sum()
+
+        D50 = self.calc_Di(feed_data.T, target_Di=50)
+        D84 = self.calc_Di(feed_data.T, target_Di=84)
+
+        print(frac)
+        print(D50)
+        print(f"Mean {D50.mean()} mm")
+
+        sum_data = feed_data.sum(axis=1)
+        sum_frac = sum_data.cumsum() / sum_data.sum()
+        sum_D16 = self.calc_Di(pd.DataFrame({'sum' : sum_data}).T, target_Di=16)
+        sum_D50 = self.calc_Di(pd.DataFrame({'sum' : sum_data}).T, target_Di=50)
+        sum_D84 = self.calc_Di(pd.DataFrame({'sum' : sum_data}).T, target_Di=84)
+
+        print(sum_frac)
+        print(f"D16 of samples sum {sum_D16} mm")
+        print(f"D50 of samples sum {sum_D50} mm")
+        print(f"D84 of samples sum {sum_D84} mm")
+
+        n = feed_data.shape[1]
+        title = f"Overall feed distribution ({n} samples)"
+        #self.plot_distribution(frac, hlines=[0.5, 0.84], title=title)
+        self.plot_distribution(sum_frac, title=title)
+
+        # Save the figure
+        filename = f"simple_feed_sum_distributions_logx.png"
+        #filename = f"simple_feed_sum_distributions.png"
+        self.save_figure(filename)
+
+        plt.show()
+
+
     def make_simple_masses_plots(self):
-        self.generic_greeting("total mass vs time",
+        self.generic_make("total mass vs time",
                 self.omnimanager.reload_masses_data,
-                self.plot_simple_masses)
+                self.plot_simple_masses, fig_subdir='trap')
 
     def plot_simple_masses(self):
         x_name = 'exp_time'
@@ -1339,7 +1872,7 @@ class UniversalGrapher:
         plot_kwargs = {
                 'x'      : x_name,
                 'y'      : y_name,
-                #'kind'   : 'scatter',
+                'kind'   : 'scatter',
                 'legend' : False,
                 }
         masses_gather_kwargs = {
@@ -1350,6 +1883,7 @@ class UniversalGrapher:
 
         filename_x = x_name.replace('_', '-').lower()
         filename_y = y_name.replace(' ', '-').lower()
+        filename_y = filename_y.replace('-(kg)', '')
         figure_name = f"simple_masses_{filename_y}_v_{filename_x}.png"
 
         # Start plot loop
@@ -1369,16 +1903,16 @@ class UniversalGrapher:
         fig_kwargs = {
                 'xlabel'        : r"Experiment time (hours)",
                 'ylabel'        : r"Total dry mass (kg)",
-                'title'         : r"Total bedload mass at end of period",
+                'title'         : r"Total transported bedload mass at end of period",
                 'legend_labels' : [r"Total dry mass (kg)"],
                 }
         self.format_generic_figure(fig, axs, plot_kwargs, fig_kwargs)
 
 
     def make_simple_sieve_plots(self):
-        self.generic_greeting(" 11.2mm vs time",
+        self.generic_make(" 11.2mm vs time",
                 self.omnimanager.reload_sieve_data,
-                self.plot_simple_sieve)
+                self.plot_simple_sieve, fig_subdir='trap')
 
     def plot_simple_sieve(self):
         x_name = 'exp_time'
@@ -1423,9 +1957,9 @@ class UniversalGrapher:
 
 
     def make_sieve_di_plots(self, Di=50):
-        self.generic_greeting(f" D{Di} vs time",
+        self.generic_make(f" D{Di} vs time",
                 self.omnimanager.reload_sieve_data,
-                self.plot_sieve_di, plot_fu_kwargs={'Di' : Di})
+                self.plot_sieve_di, plot_fu_kwargs={'Di' : Di}, fig_subdir='trap')
 
     def plot_sieve_di(self, **kwargs):
         x_name = 'exp_time'
@@ -1473,48 +2007,6 @@ class UniversalGrapher:
                 'legend_labels' : [r"Mass (g)"],
                 }
         self.format_generic_figure(fig, axs, plot_kwargs, fig_kwargs)
-
-    def calc_Di(self, data, target_Di=50):
-        # Calculate the Di values for a dataframe of sieve masses
-        # data should be a dataframe of raw masses per size class (size sorted 
-        # smallest to largest)
-        # target_Di is an integer between 0 and 100
-        # 
-        # returns series
-
-        assert(0 < target_Di < 100)
-        target = target_Di/100
-
-        # Calculate cumulative curve and normalize
-        cumsum = data.cumsum(axis=1)
-        fractional = cumsum.divide(cumsum.loc[:, 45], axis=0)
-
-        # interpolate the percentile
-        # I CANNOT find a cleaner way to do this... Definitely not in Pandas.
-        np_frac = fractional.values
-        np_cols = fractional.columns.values
-
-        np_lesser = np_frac <= target
-        np_rlesser = np.roll(np_lesser, -1, axis=1)
-        np_lower = np_lesser & ~np_rlesser # find True w/ False to right
-
-        np_greater = np_frac >= target
-        np_rgreater = np.roll(np_greater, 1, axis=1)
-        np_upper = np_greater & ~np_rgreater # find True w/ False to left
-
-        lower_frac = np_frac[np_lower]
-        upper_frac = np_frac[np_upper]
-        lower = np_cols[np.argmax(np_lower, axis=1)] # lower size classes
-        upper = np_cols[np.argmax(np_upper, axis=1)] # upper size classes
-
-        lower_psi = np.log2(lower)
-        upper_psi = np.log2(upper)
-
-        Di_psi = lower_psi + (target - lower_frac) * (upper_psi - lower_psi) /\
-                            (upper_frac - lower_frac)
-        Di = 2**Di_psi
-
-        return pd.Series(Di, index=fractional.index, name=f"D{target_Di}")
 
 
     def gather_depth_data(self, kwargs):
@@ -1598,6 +2090,71 @@ class UniversalGrapher:
                 self.sieve_data_frames[exp_code] = []
             self.sieve_data_frames[exp_code].append(data.loc[:, ])
 
+    def calc_Di(self, data, target_Di=50):
+        # Calculate the Di values for a dataframe of sieve masses
+        # data should be a dataframe of raw masses per size class (size sorted 
+        # smallest to largest)
+        # target_Di is an integer between 0 and 100
+        # 
+        # returns series
+
+        if isinstance(target_Di, str):
+            target_Di = int(target_Di[1:])
+
+        assert(0 < target_Di < 100)
+        target = target_Di/100
+        name = f"D{target_Di}"
+
+        notnull_idx = data.notnull().all(axis=1)
+        raw_data = data
+        data = data.loc[notnull_idx, :]
+        # Calculate cumulative curve and normalize
+        cumsum = data.cumsum(axis=1)
+        notnull_fractional = cumsum.divide(cumsum.iloc[:, -1], axis=0)
+
+        # Make sure the target falls between datapoints on the distribution
+        fines_okay = (notnull_fractional < target).any(axis=1)
+        coarse_okay = (notnull_fractional > target).any(axis=1)
+        okay_rows = fines_okay & coarse_okay
+        fractional = notnull_fractional.loc[okay_rows, :]
+
+        # interpolate the percentile
+        # I CANNOT find a cleaner way to do this... Definitely not in Pandas.
+        np_frac = fractional.values
+        np_cols = fractional.columns.values
+
+        np_equal = np_frac == target
+
+        np_lesser = np_frac < target
+        np_rlesser = np.roll(np_lesser, -1, axis=1)
+        np_lower = np_lesser & ~np_rlesser # find True w/ False to right
+
+        np_greater = np_frac > target
+        np_rgreater = np.roll(np_greater, 1, axis=1)
+        np_upper = np_greater & ~np_rgreater # find True w/ False to left
+
+        lower_frac = np_frac[np_lower]
+        upper_frac = np_frac[np_upper]
+        lower = np_cols[np.argmax(np_lower, axis=1)] # lower size classes
+        upper = np_cols[np.argmax(np_upper, axis=1)] # upper size classes
+        equal = np_cols[np.argmax(np_equal, axis=1)] # equal size class
+        equal_rows = np_equal.any(axis=1)
+
+        lower_psi = np.log2(lower)
+        upper_psi = np.log2(upper)
+
+        Di_psi = lower_psi + (target - lower_frac) * (upper_psi - lower_psi) /\
+                            (upper_frac - lower_frac)
+        Di = 2**Di_psi
+        Di[equal_rows] = equal[equal_rows]
+
+        # Add the null values back in to make the array the same size
+        notnull_fractional.loc[okay_rows, name] = Di
+        out = pd.Series(index=raw_data.index, name=name)
+        out.loc[notnull_idx] = notnull_fractional[name]
+
+        return out
+
 
     # Functions to plot only gsd data
     def make_mean_gsd_time_plots(self, y_name='D50'):
@@ -1646,7 +2203,7 @@ class UniversalGrapher:
 
             plot_kwargs['ax'] = ax
             experiment = self.omnimanager.experiments[exp_code]
-            ax.set_title(f"Experiment {exp_code} {experiment.name}")
+            ax.set_title(f"{exp_code} {experiment.name}")
 
             # Get the data and group it by the line category
             exp_data = gsd_data[exp_code]
@@ -1771,6 +2328,10 @@ class UniversalGrapher:
 
             # Get the data and group it by the line category
             exp_data = gsd_data[exp_code]
+            idx = pd.IndexSlice
+            exp_data = exp_data.loc[idx[:, ('sta-3000', 'sta-5000')], :]
+            print(exp_data)
+            assert(False)
             exp_data.reset_index(inplace=True)
             exp_data['exp_time'] = exp_data['exp_time'] / 60
             exp_data.set_index(gsd_gather_kwargs['new_index'], inplace=True)
@@ -1782,7 +2343,7 @@ class UniversalGrapher:
             ax.set_xticks(xticks_locs[::3])
             ax.set_xticklabels(xticks_labels[::3])
             ax.tick_params(bottom=True, top=True, left=True, right=True)
-            ax.set_title(f"Experiment {exp_code} {experiment.name}")
+            ax.set_title(f"{exp_code} {experiment.name}")
 
         self.format_box_gsd_figure(fig, axs, plot_kwargs)
 
@@ -1831,140 +2392,133 @@ class UniversalGrapher:
 
 
     def make_gsd_plots(self, x_name='exp_time', y_name='D50'):
-        name = 'time' if x_name =='exp_time' else 'station' if x_name == 'sta_str' else x_name
-        self.logger.write([f"Making gsd {name} plots..."])
-
-        indent_function = self.logger.run_indented_function
-
-        indent_function(self.omnimanager.reload_gsd_data,
-                before_msg="Loading data", after_msg="Data Loaded!")
-
-        indent_function(self.plot_gsd,
-                kwargs={'x_name':x_name, 'y_name':y_name},
-                before_msg=f"Plotting gsd vs {name}",
-                after_msg="Finished Plotting!")
-
-        self.logger.end_output()
+        self.generic_make("2m gsd",
+                self.omnimanager.reload_gsd_data,
+                self.plot_gsd,
+                plot_fu_kwargs={'x_name':x_name, 'y_name':y_name},
+                fig_subdir='gsd')
 
     def plot_gsd(self, y_name='D50', x_name='exp_time'):
+        sizes = ['0.5', '0.71', '1', '1.4', '2', '2.8', '4', '5.6', '8',
+                '11.3', '16', '22.6', '32',]
         plot_kwargs = {
                 'x'      : x_name,
                 'y'      : y_name,
-                #'kind'   : 'scatter',
+                'kind'   : 'scatter',
                 'legend' : False,
+                #'stations' : [4500, 5168, 5836],
+                'stations' : [4500, 5000, 5168, 5836, 6000],
                 }
         gsd_gather_kwargs = {
-                'columns'   : y_name if isinstance(y_name, list) else [y_name],
+                #'columns'   : y_name if isinstance(y_name, list) else [y_name],
+                'columns'   : [y_name],# + sizes,
                 'new_index' : ['exp_time', 'sta_str'],
                 }
-        kwargs = {'plot_kwargs'    : plot_kwargs,
-                  }
 
         # Get the name of the lines (exp_time or sta_str) automatically
         # ie pick the other item in a two item list
         line_options = gsd_gather_kwargs['new_index'].copy()
         line_options.remove(x_name)
-        lines_category = line_options[0]
-
-        # Make a color generating function
-        get_color = self.generate_rb_color_fu(8)
+        plot_kwargs['lines_category'] = line_options[0]
 
         gsd_data = self.gather_gsd_data(gsd_gather_kwargs)
 
-        # Get subplots
-        fig, axs = self.create_experiment_subplots()
-
-        # Make one plot per experiment
-        exp_codes = list(gsd_data.keys())
-        exp_codes.sort()
-        self.plot_labels = []
-        for exp_code, ax in zip(exp_codes, axs.flatten()):
-            self.logger.write(f"Plotting experiment {exp_code}")
-
-            plot_kwargs['ax'] = ax
-            experiment = self.omnimanager.experiments[exp_code]
-            ax.set_title(f"Experiment {exp_code} {experiment.name}")
-
-            # Get the data and group it by the line category
-            exp_data = gsd_data[exp_code]
-            grouped = exp_data.groupby(level=lines_category)
-
-            # Plot each group as a line
-            for i, group in enumerate(grouped):
-                plot_kwargs['color'] = get_color(i)
-                self.plot_group(group, plot_kwargs)
-
-        self.format_gsd_figure(fig, axs, plot_kwargs)
+        # Comparison of D50 calculation methods
+        #row = gsd_data['1A'].iloc[0:5, :]
+        #sizes = [0.5, 0.71, 1, 1.41, 2, 2.83, 4, 5.66, 8, 11.2, 16, 22.3, 32]
+        #curr_D50 = row.loc[:, 'D50']
+        #print(curr_D50)
+        #rsizes = row.loc[:, sizes]
+        #new_D50 = self.calc_Di(rsizes)
+        #print()
+        #print(new_D50)
+        #print()
+        #print(curr_D50 / new_D50)
+        #assert(False)
 
         # Generate a figure name and save the figure
         filename_y = y_name.replace('_', '-').lower()
         filename_x = x_name.replace('_', '-').lower()
-        figure_name = f"gsd_{filename_y}_v_{filename_x}.png"
-        self.save_figure(figure_name)
-        plt.show()
+        figure_name = f"2m_gsd_{filename_y}_v_{filename_x}.png"
 
-    def format_gsd_figure(self, fig, axs, plot_kwargs):
+        self.plot_labels = []
+        self.generic_plot_experiments(
+            self._plot_gsd, self._format_gsd_figure, 
+            gsd_data, plot_kwargs, figure_name)
+
+    def _plot_gsd(self, exp_code, all_data, plot_kwargs):
+        y_name = plot_kwargs['y']
+        lines_category = plot_kwargs.pop('lines_category')
+        stations = plot_kwargs.pop('stations')
+        sta_str = [f"sta-{station}" for station in stations]
+
+        # Get the data and group it by the line category
+        exp_data = all_data[exp_code]
+        idx = pd.IndexSlice
+        data = exp_data.loc[idx[:, sta_str], :]
+        if data.empty:
+            #print(f"EMPTY {exp_code}")
+            pass
+        else:
+            log2_Di_name = f"{y_name}_log2"
+            data.loc[:, log2_Di_name] = (np.log2(data.loc[:, y_name]))
+            
+            # Group the data
+            sta_grouped = data.groupby(level=lines_category)
+            time_grouped = data.groupby(level=plot_kwargs['x'])
+
+            # Make a color generating function
+            get_color = self.generate_rb_color_fu(len(stations))
+
+            # Plot each sta group 
+            for i, group in enumerate(sta_grouped):
+                plot_kwargs['color'] = 'silver'#get_color(i)
+                self.plot_group(group, plot_kwargs)
+
+            # Plot the time group geometric mean
+            time_mean = time_grouped.mean()
+            Di_gm_name = f"{y_name}_gm"
+            Di_gm = np.power(2, time_mean.loc[:, log2_Di_name])
+            time_mean.loc[:, Di_gm_name] = Di_gm
+
+            mean_kwargs = plot_kwargs.copy()
+            del mean_kwargs['color']# = 'k'
+            mean_kwargs['kind'] = 'line'
+            mean_kwargs['y'] = Di_gm_name
+
+            self.plot_group(time_mean, mean_kwargs)
+
+        ax = plot_kwargs['ax']
+        self.draw_feed_Di(ax, plot_kwargs['y'])
+        ax.locator_params(axis='y', steps=[1,2,5, 10], min_n_ticks=3)
+        self.generic_set_grid(ax)
+
+        plot_kwargs['lines_category'] = lines_category
+        plot_kwargs['stations'] = stations
+
+    def _format_gsd_figure(self, fig, axs, plot_kwargs):
         x = plot_kwargs['x']
         y = plot_kwargs['y']
+        Di = rf"$D_{{ {y[1:]} }}$"
 
-        # Set the spacing and area of the subplots
-        fig.tight_layout()
-        fig.subplots_adjust(top=0.9, left=0.05, bottom=0.075, right=0.90)
-
-        # Format the common legend
-        if x == 'sta_str':
-            # Then lines are times, make nicer time labels for the legend
-            hour_fu = lambda n: 'hour' if n == 1 else 'hours'
-            label_fu = np.vectorize(
-                    lambda m: f"{m//60} {hour_fu(m//60)} {m%60} mins")
-            self.plot_labels = label_fu(self.plot_labels)
-        elif x == 'exp_time':
-            # Then lines are stations, make nicer station labels for the legend
-
-            get_meter = lambda sta_str: float(sta_str[-4:])/1000
-            label_fu = np.vectorize(
-                    lambda sta_str: f"Station {get_meter(sta_str):.1f}m")
-            self.plot_labels = label_fu(self.plot_labels)
-
-        ax0_lines = axs[0,0].get_lines()
-        fig.legend(handles=ax0_lines, labels=self.plot_labels, loc='center right')
-
-        fontsize = 16
-
-        # Set common x label
-        t = r"Experiment time (hours)"
-        s = r"Station (mm)"
-        xlabel = t if x == 'exp_time' else s if x == 'sta_str' else x
-        fig.text(0.5, 0.01, xlabel, ha='center', usetex=True,
-                fontsize=fontsize)
-
-        # Set common y label
-        d50 = r"$D_{50} (mm)$"
-        ylabel = d50 if y == 'D50' else y
-        fig.text(0.01, 0.5, ylabel, va='center', usetex=True,
-                fontsize=fontsize, rotation='vertical')
-        
-        # Make a title
-        title_y = r"$D_{50}$" if y == 'D50' else y
-        title_str = rf"Change in {title_y}"
-        if x == 'exp_time':
-            title_str += r" over time for each station"
-        elif x == 'sta_str':
-            title_str += r" at a station for each time"
-        title_str += rf" ({asctime()})"
-        plt.suptitle(title_str, fontsize=fontsize, usetex=True)
+        fig_kwargs = {
+                'xlabel'        : r"Experiment time (hours)",
+                'ylabel'        : r"Size (mm)",
+                'title'         : rf"Bed surface {Di} between Stations 4.5 m and 6.5 m",
+                'legend_labels' : [r"Mean {Di}", r"Feed {Di}"],
+                }
+        self.format_generic_figure(fig, axs, plot_kwargs, fig_kwargs)
 
 
     def gather_gsd_data(self, kwargs):
-        # Gather all the gsd data into a dict of dataframes separated by 
-        # exp_code
-        self.gsd_data_frames = {}
-        self.omnimanager.apply_to_periods(self._gather_gsd_time_data, kwargs)
-
-        # Combines the separate frames into one dataframe per experiment
+        kwargs['gsd_frames'] = {}
+        self.omnimanager.apply_to_periods(
+                self._gather_gsd_time_data, kwargs=kwargs)
         gsd_data = {}
-        for exp_code, frames in self.gsd_data_frames.items():
+        for exp_code, frames in kwargs['gsd_frames'].items():
             gsd_data[exp_code] = pd.concat(frames)
+            gsd_data[exp_code].sort_index(level=kwargs['new_index'][0],
+                    inplace=True)
         return gsd_data
 
     def _gather_gsd_time_data(self, period, kwargs):
@@ -1978,46 +2532,53 @@ class UniversalGrapher:
         if data is not None:
             data.reset_index(inplace=True)
             data.set_index(new_index, inplace=True)
-            if exp_code not in self.gsd_data_frames:
-                self.gsd_data_frames[exp_code] = []
-            self.gsd_data_frames[exp_code].append(data.loc[:, cols])
+            if exp_code not in kwargs['gsd_frames']:
+                kwargs['gsd_frames'][exp_code] = []
+            kwargs['gsd_frames'][exp_code].append(data.loc[:, cols])
 
 
     # Functions to plot only Qs data
-    def make_Qs_plots(self):
-        self.logger.write([f"Making Qs time plots..."])
+    def make_manual_Di_plots(self):
+        self.logger.write([f"Making manual Di time plots..."])
 
+        self.figure_subdir = self.figure_subdir_dict['lighttable']
         self.ignore_steps = []#['rising-50L']
 
         indent_function = self.logger.run_indented_function
 
-        indent_function(self.load_Qs_data,
+        reload_functions = [self.load_Qs_data,
+                self.omnimanager.reload_sieve_data]
+        indent_function(lambda : [x() for x in reload_functions],
                 before_msg="Loading data", after_msg="Data Loaded!")
 
-        indent_function(self.plot_Qs_data,
+        indent_function(self.plot_manual_Di_data,
                 before_msg=f"Plotting Qs data",
                 after_msg="Finished Plotting!")
 
         self.logger.end_output()
 
-    def plot_Qs_data(self):
+    def plot_manual_Di_data(self):
         # Do stuff before plot loop
         x_name = 'exp_time_hrs'
-        y_name = 'Bedload all'
+        #y_name = 'D84'
+        y_name = 'D50'
         roll_window = 10 #minutes
 
         plot_kwargs = {
                 'x'      : x_name,
                 'y'      : y_name,
                 'kind'   : 'scatter',
-                'legend' : True,
-                #'logy' : True,
+                #'legend' : True,
+                'legend' : False,
                 'xlim' : (-0.25, 8.25),
-                #'ylim' : (0.001, settings.lighttable_bedload_cutoff), # for use with logy
+                #'ylim' : (0, settings.lighttable_bedload_cutoff), # for use without logy, for 'Bedload all'
+                #'logy' : True,
+                #'ylim' : (0.001, settings.lighttable_bedload_cutoff), # for use with logy, for 'Bedload all'
                 }
 
         rolling_kwargs = {
-                'y'           : plot_kwargs['y'],
+                'x'           : x_name,
+                'y'           : y_name,
                 'window'      : roll_window*60, # seconds
                 'min_periods' : 20,
                 'center'      : True,
@@ -2027,10 +2588,9 @@ class UniversalGrapher:
                 }
 
         qs_data = self.gather_Qs_data(gather_kwargs)
+        all_sieve_data = self.gather_sieve_data({})
 
-        filename_y_col = y_name.replace(' ', '-').lower()
-        logy_str = '_logy' if 'logy' in plot_kwargs and plot_kwargs['logy'] else ''
-        figure_name = f"cleaned_{filename_y_col}_roll-{roll_window}min{logy_str}.png"
+        figure_name = f"manual_{y_name}_check.png"
 
         fig, axs = self.create_experiment_subplots(rows=2, cols=4)
         
@@ -2042,16 +2602,99 @@ class UniversalGrapher:
 
             plot_kwargs['ax'] = ax
             experiment = self.omnimanager.experiments[exp_code]
-            ax.set_title(f"Experiment {exp_code} {experiment.name}")
+
+            accumulated_data = qs_data[exp_code]
+            sieve_data = all_sieve_data[exp_code]
+
+            bedload_masses = accumulated_data.loc[:, 'Bedload 0.5':'Bedload 45'].copy()
+            bedload_masses.columns = sieve_data.columns
+            Di = self.calc_Di(bedload_masses, target_Di=y_name)
+            labview_Di = accumulated_data.loc[:, y_name]
+
+            ax.scatter(labview_Di.values, Di.values)
+            ax.plot([0,30], [0,30], c='r')
+
+        plt.show()
+
+
+    def make_Qs_plots(self):
+        self.logger.write([f"Making Qs time plots..."])
+
+        self.figure_subdir = self.figure_subdir_dict['lighttable']
+        self.ignore_steps = []#['rising-50L']
+
+        indent_function = self.logger.run_indented_function
+
+        reload_functions = [self.load_Qs_data,
+                self.omnimanager.reload_sieve_data]
+        indent_function(lambda : [x() for x in reload_functions],
+                before_msg="Loading data", after_msg="Data Loaded!")
+
+        indent_function(self.plot_Qs_data,
+                before_msg=f"Plotting Qs data",
+                after_msg="Finished Plotting!")
+
+        self.logger.end_output()
+
+    def plot_Qs_data(self):
+        # Do stuff before plot loop
+        x_name = 'exp_time_hrs'
+        #y_name = 'Bedload all'
+        #y_name = 'D84'
+        y_name = 'D50'
+        roll_window = 10 #minutes
+
+        plot_kwargs = {
+                'x'      : x_name,
+                'y'      : y_name,
+                'kind'   : 'scatter',
+                #'legend' : True,
+                'legend' : False,
+                'xlim' : (-0.25, 8.25),
+                #'ylim' : (0, settings.lighttable_bedload_cutoff), # for use without logy, for 'Bedload all'
+                #'logy' : True,
+                #'ylim' : (0.001, settings.lighttable_bedload_cutoff), # for use with logy, for 'Bedload all'
+                }
+
+        rolling_kwargs = {
+                'x'           : x_name,
+                'y'           : y_name,
+                'window'      : roll_window*60, # seconds
+                'min_periods' : 20,
+                'center'      : True,
+                #'on'          : plot_kwargs['x'],
+                }
+        gather_kwargs = {
+                }
+
+        qs_data = self.gather_Qs_data(gather_kwargs)
+        if y_name in ['D50', 'D84']:
+            # Gather the sieve data Di for plotting
+            all_sieve_data = self.gather_sieve_data({})
+
+        filename_y_col = y_name.replace(' ', '-').lower()
+        logy_str = '_logy' if 'logy' in plot_kwargs and plot_kwargs['logy'] else ''
+        figure_name = f"scaled_{filename_y_col}_roll-{roll_window}min{logy_str}.png"
+
+        fig, axs = self.create_experiment_subplots(rows=2, cols=4)
+        
+        # Make one plot per experiment
+        exp_codes = list(qs_data.keys())
+        exp_codes.sort()
+        for exp_code, ax in zip(exp_codes, axs.flatten()):
+            self.logger.write(f"Plotting experiment {exp_code}")
+
+            plot_kwargs['ax'] = ax
+            experiment = self.omnimanager.experiments[exp_code]
 
             accumulated_data = qs_data[exp_code]
 
             # Plot the data points
-            accumulated_data.plot(**plot_kwargs)
+            accumulated_data.plot(**plot_kwargs, marker='.', c='silver')
 
             # Generate and plot rolled data
             rolled_data = self.roll_data(accumulated_data,
-                    roll_kwargs=rolling_kwargs, plot_kwargs=plot_kwargs)
+                    roll_kwargs=rolling_kwargs)
 
             rolling_mean = rolled_data.mean()
             rolling_stddev = rolled_data.std()
@@ -2066,21 +2709,173 @@ class UniversalGrapher:
                                         if k not in ['x', 'y', 'kind']}
             #series_plot_kwargs['xlim'] = ax.get_xlim()
             #series_plot_kwargs['style'] = 'r'
-            rolling_mean.plot(label='Mean', style='r', **series_plot_kwargs)
-            plot_stddev(rolling_mean, rolling_stddev, "Stddev", series_plot_kwargs)
-            plot_stddev(rolling_mean, rolling_stddev*5, "5x Stddev envelope", series_plot_kwargs)
+            rolling_mean.plot(label='Mean', style='b', **series_plot_kwargs)
+            (rolling_mean + rolling_stddev).plot(label="Mean + Stddev",
+                    style='c', **series_plot_kwargs)
+            #plot_stddev(rolling_mean, rolling_stddev, "Mean + Stddev", series_plot_kwargs)
+            #plot_stddev(rolling_mean, rolling_stddev*5, "5x Stddev envelope", series_plot_kwargs)
 
-            ax.set_title(f"Experiment {experiment.code} {experiment.name}")
+            if y_name in ['D50', 'D84']:
+                self.draw_feed_Di(ax, y_name)
 
-        fig_kwargs = {
-                'xlabel'        : r"Experiment time (hours)",
-                'ylabel'        : r"Bedload (g/s)",
-                'title'         : rf"Cleaned lighttable bedload data with std dev envelopes",
-                #'legend_labels' : [r"Elevation Std dev"],
-                }
-        plt.legend()
+                # Plot the sieve data Di if applicable
+                sieve_data = all_sieve_data[exp_code]
+                #test = sieve_data.loc[100]
+                #print(test)
+                #frac = test.cumsum() / test.sum()
+                #plt.figure()
+                #self.plot_distribution(frac)
+                #plt.show()
+                #assert(False)
+                sieve_data[y_name] = self.calc_Di(sieve_data,
+                        target_Di=int(y_name[1:]))
+                sieve_plot_kwargs = {
+                        'x'      : 'exp_time' if x_name == 'exp_time_hrs' else x_name,
+                        'y'      : y_name,
+                        'label'  : rf"Trap {y_name}",
+                        'ax'     : ax,
+                        'legend' : False,
+                        'marker' : '*',
+                        'markersize': 7,
+                        'linestyle' : 'None',
+                        'color'  : 'r',
+                        }
+                self.plot_group(sieve_data, sieve_plot_kwargs)
+
+            self.plot_2B_X(exp_code, ax)
+
+            ax.set_title(f"{experiment.code} {experiment.name}")
+            ax.set_ylabel('')
+            ax.set_xlabel('')
+            self.generic_set_grid(ax, yticks_minor=True)
+
+        if y_name == 'Bedload all':
+            fig_kwargs = {
+                    'xlabel' : r"Experiment time (hours)",
+                    'ylabel' : r"Bedload (g/s)",
+                    'title'  : r"Light table bedload data with standard deviation envelope",
+                    #'legend_labels' : [r"Mean", r"Mean + Std Dev"],
+                    }
+        elif y_name in ['D50', 'D84']:
+            fig_kwargs = {
+                    'xlabel' : r"Experiment time (hours)",
+                    'ylabel' : rf"$D_{{ {y_name[1:]} }}$ (mm)",
+                    'title'  : rf"Bedload {y_name} with standard deviation envelope",
+                    #'legend_labels' : [r"Mean", r"Mean + Std Dev"],
+                    }
+        if not self.for_paper:
+            plt.legend()
         self.format_generic_figure(fig, axs, plot_kwargs, fig_kwargs)
 
+        # Save the figure
+        self.save_figure(figure_name)
+        plt.show()
+
+
+    def make_Di_ratio_plots(self):
+        self.generic_make(f"Qs Di ratio",
+                self.omnimanager.reload_Qs_data, self.plot_Di_ratio,
+                fig_subdir='lighttable')
+
+    def plot_Di_ratio(self):
+        # Do stuff before plot loop
+        x_name = 'exp_time_hrs'
+        #y_name = 'Bedload all'
+        Dnumerator = 'D84'
+        Dnominator = 'D50'
+        y_name = f'{Dnumerator}_{Dnominator}'
+        roll_window = 10 #minutes
+
+        plot_kwargs = {
+                'x'      : x_name,
+                'y'      : y_name,
+                'kind'   : 'scatter',
+                #'legend' : True,
+                'legend' : False,
+                'xlim' : (-0.25, 8.25),
+                #'ylim' : (0, settings.lighttable_bedload_cutoff), # for use without logy, for 'Bedload all'
+                #'logy' : True,
+                #'ylim' : (0.001, settings.lighttable_bedload_cutoff), # for use with logy, for 'Bedload all'
+                }
+
+        rolling_kwargs = {
+                'x'           : x_name,
+                'window'      : roll_window*60, # seconds
+                'min_periods' : 20,
+                'center'      : True,
+                #'on'          : plot_kwargs['x'],
+                }
+        gather_kwargs = {
+                }
+
+        qs_data = self.gather_Qs_data(gather_kwargs)
+
+        filename_y_col = y_name.replace(' ', '-').lower()
+        logy_str = '_logy' if 'logy' in plot_kwargs and plot_kwargs['logy'] else ''
+        figure_name = f"scaled_{filename_y_col}_roll-{roll_window}min{logy_str}.png"
+
+        fig, axs = self.create_experiment_subplots(rows=4, cols=2)
+        
+        # Make one plot per experiment
+        exp_codes = list(qs_data.keys())
+        exp_codes.sort()
+        for exp_code, ax in zip(exp_codes, axs.flatten()):
+            self.logger.write(f"Plotting experiment {exp_code}")
+
+            plot_kwargs['ax'] = ax
+            experiment = self.omnimanager.experiments[exp_code]
+
+            accumulated_data = qs_data[exp_code]
+
+            ## Plot the data points
+            #accumulated_data.plot(**plot_kwargs, marker='.', c='silver')
+
+            numerator = accumulated_data.loc[:, Dnumerator]
+            denominator = accumulated_data.loc[:, Dnominator]
+            ratio = numerator / denominator
+            accumulated_data.loc[:, 'ratio'] = ratio
+            rolling_kwargs['y'] = 'ratio'
+            rolled_ratio = self.roll_data(
+                    accumulated_data, roll_kwargs=rolling_kwargs)
+            ratio_mean = rolled_ratio.mean()
+
+            # Do ratio before window mean
+            ## Generate and plot rolled data
+            #rolling_kwargs['y'] = Dnumerator
+            #rolled_numerator = self.roll_data(
+            #        accumulated_data, roll_kwargs=rolling_kwargs)
+
+            #rolling_kwargs['y'] = Dnominator
+            #rolled_denominator = self.roll_data(
+            #        accumulated_data, roll_kwargs=rolling_kwargs)
+
+            #numerator_mean = rolled_numerator.mean()
+            #denominator_mean = rolled_denominator.mean()
+
+            #ratio = numerator_mean / denominator_mean
+            # Plot the rolls
+            series_plot_kwargs = {k : plot_kwargs[k] for k in plot_kwargs
+                                        if k not in ['x', 'y', 'kind']}
+            #series_plot_kwargs['xlim'] = ax.get_xlim()
+            #series_plot_kwargs['style'] = 'r'
+            #ratio.plot(**series_plot_kwargs)
+            ratio_mean.plot(**series_plot_kwargs)
+
+            ax.set_title(f"{experiment.code} {experiment.name}")
+            ax.set_ylabel('')
+            ax.set_xlabel('')
+            self.generic_set_grid(ax, yticks_minor=True)
+
+        fig_kwargs = {
+                'xlabel' : r"Experiment time (hours)",
+                'ylabel' : rf"$\frac{{{Dnumerator}}}{{{Dnominator}}}$",
+                'title'  : rf"Bedload grain size ratio $\frac{{{Dnumerator}}}{{{Dnominator}}}$",
+                #'legend_labels' : [r"Mean", r"Mean + Std Dev"],
+                'ylabel_rotation' : 'horizontal',
+                }
+        #plt.legend()
+        self.format_generic_figure(fig, axs, plot_kwargs, fig_kwargs)
+        
         # Save the figure
         self.save_figure(figure_name)
         plt.show()
@@ -2175,7 +2970,7 @@ class UniversalGrapher:
             series_plot_kwargs['style'] = 'r'
             self.rolling_av.plot(**series_plot_kwargs)
 
-            ax.set_title(f"Experiment {experiment.code} {experiment.name}")
+            ax.set_title(f"{experiment.code} {experiment.name}")
 
         # Can't figure out how to share the twinned y axes
         #for ax_row in 0,1:
@@ -2191,6 +2986,146 @@ class UniversalGrapher:
         self.logger.write(f"Saving figure to {filepath}")
         plt.savefig(filepath, orientation='landscape')
         plt.show()
+
+
+    def make_bedload_feed_plots(self):
+        reload_kwargs = {
+                'add_feed' : True,
+                }
+        self.generic_make(f"bedload feed",
+                self.omnimanager.reload_Qs_data, self.plot_bedload_feed,
+                load_fu_kwargs=reload_kwargs,
+                fig_subdir='lighttable')
+
+    def plot_bedload_feed(self):
+        # Do stuff before plot loop
+        x_name = 'feed'
+        y_name = 'Bedload all'
+
+        #roll_window = 10 #minutes
+        #rolling_kwargs = {
+        #        'x'           : 'exp_time_hrs',
+        #        'y'           : y_name,
+        #        'window'      : roll_window*60, # seconds
+        #        'min_periods' : 20,
+        #        'center'      : True,
+        #        #'on'          : plot_kwargs['x'],
+        #        }
+        gather_kwargs = {
+                #'ignore_steps' : ['rising-50L']
+                }
+
+        qs_data = self.gather_Qs_data(gather_kwargs)
+
+        # Can't use generic loop
+        # Want to plot all of them on one chart
+        fig = plt.figure(figsize=(16,10))
+        ax = plt.gca()
+
+        # Make one color per experiment
+        #colors = list(plt.get_cmap('tab20').colors)
+        #colors = [ # from 'Set1' w darker yellow
+        #    (0.8941, 0.1019, 0.1098), (0.2156, 0.4941, 0.7215),
+        #    (0.3019, 0.6862, 0.2901), (0.5960, 0.3058, 0.6392),
+        #    (1.0000, 0.4980, 0.0000), (0.6000, 0.6000, 0.1176),
+        #    (0.6509, 0.3372, 0.1568), (0.9686, 0.5058, 0.7490),
+        #    (0.6000, 0.6000, 0.6000),
+        #    ]
+        colors = list(zip([
+            # Bright
+            [228,  26,  28],
+            [ 55, 126, 184],
+            [ 77, 175,  74],
+            [152,  78, 163],
+            [255, 127,   0],
+            #[255, 255,  51],
+            [231, 214,  43],
+            [166,  86,  40],
+            #[247, 129, 191],
+            [247, 103, 178],
+            ], [
+            # Faded
+            [255,  87,  88],
+            [101, 169, 225],
+            [113, 204, 110],
+            [205, 125, 217],
+            [255, 193, 132],
+            [224, 202,  99],
+            [180, 130, 100],
+            [247, 170, 211],
+            #[251, 180, 174],
+            #[179, 205, 227],
+            #[204, 235, 197],
+            #[222, 203, 228],
+            #[254, 217, 166],
+            #[255, 255, 204],
+            #[229, 216, 189],
+            #[253, 218, 236],
+            ]))
+        #[print(c) for c in colors]
+        exp_codes = list(qs_data.keys())
+        exp_codes.sort(reverse=True)
+        offsets = {c: -o for c, o in zip(exp_codes, range(len(exp_codes)))}
+        assert(len(exp_codes) <= len(colors))
+        for exp_code, color_pair in zip(exp_codes, colors[:len(exp_codes)]):
+            self.logger.write(f"Plotting experiment {exp_code}")
+            experiment = self.omnimanager.experiments[exp_code]
+
+            # Separate data
+            peak_time = 4.5 #hrs
+            all_data = qs_data[exp_code]
+            rising = all_data[all_data['exp_time_hrs'] <= peak_time]
+            falling = all_data[all_data['exp_time_hrs'] > peak_time]
+            loop_args = zip([rising, falling], ['rising', 'falling'],
+                    color_pair)
+            for l_data, limb, color in loop_args:
+                color = np.array(color)/255
+                data = l_data.loc[l_data['discharge'] != 50, (x_name, y_name)]
+                groups = data.groupby(by='feed')
+
+                # FYI DataFrameGroupBy.boxplot is sucking for some reason. Cannot 
+                # figure out why it plots both feed and discharge or crashes if I 
+                # try to select one. If boxplots are necessary, rather than mean & 
+                # stddev, separate the data out by hand and plot boxplots one at a 
+                # time. Don't waste more time on this!!
+                
+                # Get stats
+                means = groups.mean()
+                means.reset_index(inplace=True)
+                stds = groups.std()
+                stds.reset_index(inplace=True)
+
+                # Make the mean point
+                ax.plot(stds['feed'], means['Bedload all'],
+                        c=color, linestyle='None',
+                        marker=('*' if limb == 'rising' else 'x'), ms=8,
+                        label=f"{exp_code} {limb}",
+                        )
+                # Make the error bars
+                limb_offset = 0.0 if limb == 'rising' else 0.5
+                ax.errorbar(stds['feed'] + offsets[exp_code] + limb_offset,
+                        means['Bedload all'], stds['Bedload all'],
+                        c=color, linestyle='None',
+                        elinewidth=1, capsize=5,
+                        label=None,
+                        marker='_',
+                        )
+
+        plt.legend()
+        ax.set_xlabel(r"Feed rate (kg/hr)")
+        ax.set_ylabel(r"Bedload transport (g/s)")
+        ax.set_title(r"Mean bedload transport rates and standard deviations compared to sediment supply")
+
+        # Generate a figure name and save the figure
+        x_name = 'feed'
+        y_name = 'Bedload all'
+        filename_y_col = y_name.replace(' ', '-').lower()
+        figure_name = f"bedload_feed_limbs.png"
+        #figure_name = f"bedload_feed_roll-{roll_window}min.png"
+
+        self.save_figure(figure_name)
+        plt.show()
+
 
     def make_hysteresis_plots(self):
         self.logger.write(["Making hysteresis plots..."])
@@ -2408,6 +3343,7 @@ class UniversalGrapher:
     def make_cumulative_mass_bal_plots(self):
         self.logger.write(["Making cumulative plots..."])
 
+        self.figure_subdir = self.figure_subdir_dict['lighttable']
         self.ignore_steps = []#['rising-50L']
 
         indent_function = self.logger.run_indented_function
@@ -2427,7 +3363,7 @@ class UniversalGrapher:
         cumsum_column = 'cumulative'
         massbal_column = 'mass_balance'
 
-        figure_name = f"cumulative_mass_balance.png"
+        figure_name = f"cleaned_cumulative_mass_balance.png"
 
         plot_kwargs = {
                 'x'      : x_column,
@@ -2506,7 +3442,8 @@ class UniversalGrapher:
 
         # Plot it!
         self._time_plot_prep(data, plot_kwargs)
-        plot_kwargs['ax'].grid(True, color='#d8dcd6')
+
+        self.generic_set_grid(plot_kwargs['ax'], yticks_minor=True)
 
     def _format_cumulative_mass_bal(self, fig, axs, plot_kwargs):
         # Format the figure after the plot loop
@@ -2515,7 +3452,7 @@ class UniversalGrapher:
                 'ylabel'        : r"Mass (kg)",
                 'title'         : r"Cumulative sum of bedload output and flume mass balance",
                 #'legend_labels' : [r"Shear from surface", r"Shear from bed"],
-                'legend_labels' : ["Cumulative\nbedload", "Bedload\nmass balance"],
+                'legend_labels' : ["Cumulative\nbedload", "Flume\nmass balance"],
                 }
         self.format_generic_figure(fig, axs, plot_kwargs, fig_kwargs)
 
@@ -2595,7 +3532,7 @@ class UniversalGrapher:
             # Plot it!
             data.plot(**plot_kwargs)
 
-            ax.set_title(f"Experiment {experiment.code} {experiment.name}")
+            ax.set_title(f"{experiment.code} {experiment.name}")
 
         plt.suptitle(f"Cumulative sum of total bedload output ({asctime()})")
 
@@ -2670,7 +3607,7 @@ class UniversalGrapher:
             # Plot it!
             counts.plot.hist(**plot_kwargs)
 
-            ax.set_title(f"Experiment {experiment.code} {experiment.name}")
+            ax.set_title(f"{experiment.code} {experiment.name}")
 
         plt.suptitle(f"Histogram of bedload transport rates ({asctime()})")
 
@@ -2736,7 +3673,8 @@ class UniversalGrapher:
 if __name__ == "__main__":
     # Run the script
     grapher = UniversalGrapher()
-    grapher.make_sieve_di_plots(Di=84)
+    #grapher.make_simple_feed_plots()
+    #grapher.make_sieve_di_plots(Di=84)
     #grapher.make_simple_sieve_plots()
     #grapher.make_simple_masses_plots()
     #grapher.make_dem_subplots()
@@ -2746,17 +3684,21 @@ if __name__ == "__main__":
     #grapher.make_dem_roughness_plots()
     #grapher.make_loc_shear_plots()
     #grapher.make_flume_shear_plots()
-    #grapher.make_avg_depth_plots()
-    #grapher.make_avg_slope_plots()
-    #grapher.make_box_gsd_plots(x_name='exp_time', y_name='D50')
-    #grapher.make_box_gsd_plots(x_name='sta_str',  y_name='D50')
-    #grapher.make_mean_gsd_time_plots(y_name=['D16', 'D50', 'D84'])
-    #grapher.make_mean_gsd_time_plots(y_name=['Fsx'])#, 'D90'])
+    #grapher.make_avg_depth_plots(plot_2m=True)
+    #grapher.make_avg_slope_plots(plot_2m=False, plot_trends='surface')
+    #!grapher.make_box_gsd_plots(x_name='exp_time', y_name='D50')
+    #!grapher.make_box_gsd_plots(x_name='sta_str',  y_name='D50')
+    #!grapher.make_mean_gsd_time_plots(y_name=['D16', 'D50', 'D84'])
+    #!grapher.make_mean_gsd_time_plots(y_name=['Fsx'])#, 'D90'])
     #grapher.make_gsd_plots(x_name='exp_time', y_name='D50')
-    #grapher.make_gsd_plots(x_name='sta_str',  y_name='D50')
+    #!grapher.make_gsd_plots(x_name='sta_str',  y_name='D50')
+    #grapher.make_manual_Di_plots()
     #grapher.make_Qs_plots()
-    #grapher.make_experiment_plots()
-    #grapher.make_hysteresis_plots()
-    #grapher.make_cumulative_plots()
+    #grapher.make_Di_ratio_plots()
+    #!grapher.make_experiment_plots()
+    #!grapher.make_bedload_feed_plots()
+    grapher.make_pseudo_hysteresis_plots(y_name='slope', plot_2m=False)
+    #!grapher.make_hysteresis_plots()
+    #!grapher.make_cumulative_plots()
     #grapher.make_cumulative_mass_bal_plots()
-    #grapher.make_transport_histogram_plots()
+    #!grapher.make_transport_histogram_plots()

@@ -64,10 +64,10 @@ class ManualProcessor:
         crawler.set_root(self.root)
         
         # example filename: 3B-flow-depths.xlsx  3B-masses.xlsx
-        #self.depth_xlsx_filepaths = crawler.get_target_files(
-        #        "??-flow-depths.xlsx", verbose_file_list=True)
-        #self.masses_xlsx_filepaths = crawler.get_target_files(
-        #        "??-masses.xlsx", verbose_file_list=True)
+        self.depth_xlsx_filepaths = crawler.get_target_files(
+                "??-flow-depths.xlsx", verbose_file_list=True)
+        self.masses_xlsx_filepaths = crawler.get_target_files(
+                "??-masses.xlsx", verbose_file_list=True)
 
         # Filenames for sieve data do not have a unique key word. Grab all 
         # excel files in the SampleSieveData directory
@@ -84,8 +84,8 @@ class ManualProcessor:
 
         self.all_depth_data = {} # {exp_code : dataframe}
         #indent_function(self._load_depth_xlsx,
-        #        before_msg="Loading depth data", after_msg="Depth data 
-        #        extraction complete")
+        #        before_msg="Loading depth data",
+        #        after_msg="Depth data extraction complete")
 
         self.all_masses_data = {} # {exp_code : dataframe}
         #indent_function(self._load_masses_xlsx,
@@ -93,6 +93,7 @@ class ManualProcessor:
         #        after_msg="Finished loading mass data!")
 
         self.all_sieve_data = {} # {exp_code : dataframe}
+        self.all_feed_data = {} # {exp_code : dataframe}
         indent_function(self._load_sieve_xlsx,
                 before_msg="Loading sieve data...",
                 after_msg="Finished loading sieve data!")
@@ -110,6 +111,7 @@ class ManualProcessor:
         #self.logger.write("Removing old references")
         #self.omnimanager._remove_datasets([f"sieve-s{i}" for i in (1,2)])
 
+        feed_data = {}
         sieve_data = {}
         for sieve_filepath in self.sieve_xlsx_filepaths:
 
@@ -119,37 +121,44 @@ class ManualProcessor:
             sieve_path, sieve_filename = psplit(sieve_filepath)
             parts = (sieve_filename.split('.')[0]).split('_')
 
-            if 'feed' in sieve_filename:
-                self.logger.write(f"Skipping feed sample {sieve_filename}.")
-                continue
+            is_feed = 'feed' in sieve_filename
 
-            exp_code, step = parts[0:2]
-            ptime = int(''.join(c for c in parts[2] if c.isdigit()))
-
-            if len(parts) == 3:
-                # No sample label, assume sample 1
-                #print('Sample 1: ', parts)
-                sample = 1
-            elif '1' in parts[3]:
-                #print('Sample 1: ', parts)
-                sample = 1
-            elif '2' in parts[3]:
-                #print('Sample 2: ', parts)
-                sample = 2
-            elif '75acc' == parts[3]:
-                #print('Sample 1: ', parts, 'Special case')
-                sample = 1
+            if is_feed:
+                exp_code = parts[0]
+                sample = int(parts[2][-1])
+                meta_kwargs = {
+                        'exp_code' : exp_code,
+                        'sample'   : sample,
+                        'feed'     : True,
+                        }
             else:
-                print('Unhandled case')
-                print(parts)
-                assert(False)
+                exp_code, step = parts[0:2]
+                ptime = int(''.join(c for c in parts[2] if c.isdigit()))
 
-            meta_kwargs = {
-                    'exp_code' : exp_code,
-                    'step'     : step,
-                    'ptime'    : ptime,
-                    'sample'   : sample,
-                    }
+                if len(parts) == 3:
+                    # No sample label, assume sample 1
+                    #print('Sample 1: ', parts)
+                    sample = 1
+                elif '1' in parts[3]:
+                    #print('Sample 1: ', parts)
+                    sample = 1
+                elif '2' in parts[3]:
+                    #print('Sample 2: ', parts)
+                    sample = 2
+                elif '75acc' == parts[3]:
+                    #print('Sample 1: ', parts, 'Special case')
+                    sample = 1
+                else:
+                    print('Unhandled case')
+                    print(parts)
+                    assert(False)
+
+                meta_kwargs = {
+                        'exp_code' : exp_code,
+                        'step'     : step,
+                        'ptime'    : ptime,
+                        'sample'   : sample,
+                        }
 
             self.logger.write(f"Extracting {sieve_filename}")
 
@@ -157,14 +166,24 @@ class ManualProcessor:
             data = self.loader.load_xlsx(sieve_filepath, kwargs, add_path=False)
             data = self._reformat_sieve_data(data, **meta_kwargs)
 
-            if exp_code in sieve_data:
-                sieve_data[exp_code].append(data)
+            if is_feed:
+                if exp_code in feed_data:
+                    feed_data[exp_code].append(data)
+                else:
+                    feed_data[exp_code] = [data]
             else:
-                sieve_data[exp_code] = [data]
+                if exp_code in sieve_data:
+                    sieve_data[exp_code].append(data)
+                else:
+                    sieve_data[exp_code] = [data]
 
         for exp_code, frames in sieve_data.items():
             combined_data = pd.concat(frames)
             self.all_sieve_data[exp_code] = combined_data.sort_index()
+
+        for exp_code, frames in feed_data.items():
+            combined_data = pd.concat(frames)
+            self.all_feed_data[exp_code] = combined_data.sort_index()
 
     def _reformat_sieve_data(self, data, **kwargs):
         # Clean up the data by providing experiment timestamps, sorting, and 
@@ -173,11 +192,12 @@ class ManualProcessor:
         self.logger.write("Reformatting data")
 
         exp_code = kwargs['exp_code']
-        step = kwargs['step']
-        limb = 'rising' if step[0] == 'r' else 'falling'
-        discharge = int(''.join(c for c in step if c.isdigit()))
-        ptime = kwargs['ptime']
         sample = kwargs['sample']
+        if 'feed' not in kwargs:
+            step = kwargs['step']
+            limb = 'rising' if step[0] == 'r' else 'falling'
+            discharge = int(''.join(c for c in step if c.isdigit()))
+            ptime = kwargs['ptime']
 
         # Rename column labels and names
         data.columns = ['size (mm)', 'mass (g)']
@@ -216,36 +236,42 @@ class ManualProcessor:
         data.set_index('size (mm)', inplace=True)
         data = (data.T).sort_index(axis=1)
 
-        # Add a multiindex to the rows
-        key = limb, discharge, ptime, sample
-        key_names = 'limb', 'discharge', 'time', 'sample'
-        data.index = pd.MultiIndex.from_tuples([key], names=key_names)
+        if 'feed' in kwargs:
+            # Add a multiindex to the rows
+            key = [sample]
+            key_name = 'sample'
+            data.index = pd.Index(key, name=key_name)
+        else:
+            # Add a multiindex to the rows
+            key = limb, discharge, ptime, sample
+            key_names = 'limb', 'discharge', 'time', 'sample'
+            data.index = pd.MultiIndex.from_tuples([key], names=key_names)
 
-        # Add a new level providing the experiment time
-        def _get_exp_time(args):
-            limb, discharge, period_time, _ = args
-            weights = {'rising'  : 0,
-                       'falling' : 1,
-                       50  : 0,
-                       62  : 1,
-                       75  : 2,
-                       87  : 3,
-                       100 : 4
-                      }
-            w_Qmax = weights[100]
-            w_limb = weights[limb]
-            w_Q = weights[discharge]
-            order = w_Q  + 2 * w_limb * (w_Qmax - w_Q)
-            try:
-                p_time = int(period_time)
-            except ValueError:
-                p_time = 60
-            exp_time = order * 60 + p_time
-            return exp_time
-        name = 'exp_time'
-        data[name] = data.index
-        data[name] = data[name].map(_get_exp_time)
-        data.set_index('exp_time', append=True, inplace=True)
+            # Add a new level providing the experiment time
+            def _get_exp_time(args):
+                limb, discharge, period_time, _ = args
+                weights = {'rising'  : 0,
+                           'falling' : 1,
+                           50  : 0,
+                           62  : 1,
+                           75  : 2,
+                           87  : 3,
+                           100 : 4
+                          }
+                w_Qmax = weights[100]
+                w_limb = weights[limb]
+                w_Q = weights[discharge]
+                order = w_Q  + 2 * w_limb * (w_Qmax - w_Q)
+                try:
+                    p_time = int(period_time)
+                except ValueError:
+                    p_time = 60
+                exp_time = order * 60 + p_time
+                return exp_time
+            name = 'exp_time'
+            data[name] = data.index
+            data[name] = data[name].map(_get_exp_time)
+            data.set_index('exp_time', append=True, inplace=True)
 
         #if (exp_code, step, ptime) == ('3B', 'r62', 60):
         #    print(data)
@@ -485,17 +511,21 @@ class ManualProcessor:
     def update_omnipickle(self):
         # Add manual data to omnipickle
         ensure_dir_exists(self.pickle_destination)
-        if self.all_depth_data:
-            self.omnimanager.add_depth_data(
-                    self.pickle_destination, self.all_depth_data)
+        #if self.all_depth_data:
+        #    self.omnimanager.add_depth_data(
+        #            self.pickle_destination, self.all_depth_data)
 
-        if self.all_masses_data:
-            self.omnimanager.add_masses_data(
-                    self.pickle_destination, self.all_masses_data)
+        #if self.all_masses_data:
+        #    self.omnimanager.add_masses_data(
+        #            self.pickle_destination, self.all_masses_data)
 
-        if self.all_sieve_data:
-            self.omnimanager.add_sieve_data(
-                    self.pickle_destination, self.all_sieve_data)
+        #if self.all_sieve_data:
+        #    self.omnimanager.add_sieve_data(
+        #            self.pickle_destination, self.all_sieve_data)
+
+        if self.all_feed_data:
+            self.omnimanager.add_feed_data(
+                    self.pickle_destination, self.all_feed_data)
 
 
 if __name__ == "__main__":
