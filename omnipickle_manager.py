@@ -33,6 +33,11 @@ class OmnipickleManager:
         self.experiments = {} # {exp_code : Experiment}
         self.omniloader = DataLoader(settings.root_dir, logger=logger)
 
+    def get_exp_codes(self):
+        exp_codes = list(self.experiments.keys())
+        exp_codes.sort()
+        return exp_codes
+
     # Data storage functions
     def store(self, overwrite={}):
         # Preparing to save the omnipickle

@@ -84,6 +84,7 @@ class UniversalGrapher:
                 'trap'           : 'trap',
                 'feed_sieve'     : 'feed_sieve',
                 'gsd'            : 'gsd',
+                'synthesis'      : 'synthesis',
                 }
         ensure_dir_exists(self.figure_destination)
 
@@ -94,7 +95,9 @@ class UniversalGrapher:
     # General use functions
     def generic_make(self, name, load_fu, plot_fu, load_fu_kwargs=None, plot_fu_kwargs=None, fig_subdir=''):
         self.logger.write([f"Making {name} plots..."])
-        self.figure_subdir = self.figure_subdir_dict[fig_subdir]
+        
+        if fig_subdir in self.figure_subdir_dict:
+            self.figure_subdir = self.figure_subdir_dict[fig_subdir]
 
         indent_function = self.logger.run_indented_function
 
@@ -296,8 +299,7 @@ class UniversalGrapher:
         fig, axs = self.create_experiment_subplots(*subplot_shape)
 
         # Make one plot per experiment
-        exp_codes = list(data.keys())
-        exp_codes.sort()
+        exp_codes = self.omnimanager.get_exp_codes()
         for exp_code, ax in zip(exp_codes, axs.flatten()):
             self.logger.write(f"Plotting experiment {exp_code}")
 
@@ -318,8 +320,6 @@ class UniversalGrapher:
 
     def format_generic_figure(self, fig, axs, plot_kwargs, fig_kwargs):
         # Must add xlabel, ylabel, and title to fig_kwargs
-        x = plot_kwargs['x']
-        y = plot_kwargs['y']
         xlabel = fig_kwargs['xlabel'] # Common xlabel
         ylabel = fig_kwargs['ylabel'] # Common ylabel
         title_str = fig_kwargs['title'] # Common title
@@ -342,7 +342,7 @@ class UniversalGrapher:
 
             # Set common y label
             rotation = fig_kwargs['ylabel_rotation'] if 'ylabel_rotation' in fig_kwargs else 'vertical'
-            fig.text(0.01, 0.5, ylabel, va='center', usetex=True,
+            fig.text(0.0005, 0.5, ylabel, va='center', usetex=True,
                     fontsize=fontsize, rotation=rotation)
         else:
             fig.subplots_adjust(top=0.9, left=0.10, bottom=0.075, right=0.90)
@@ -382,15 +382,21 @@ class UniversalGrapher:
         #plot_kwargs['ax'].grid(True, which='minor', color='#f2f2f2', axis='x')
         ax.set_axisbelow(True)
 
-    def draw_feed_Di(self, ax, Di, zorder=1):
+    def draw_feed_Di(self, ax, Di, zorder=1, multiple=1.0, text=None):
         # Di like 'D50'
+        # multiple is meant for multiples of the armor ratio
+        # text is the in-plot line label 
         assert(Di in settings.sum_feed_Di)
         kwargs = {'c' : 'k', 'linestyle' : '--',
                 'label' : self.get_feed_Di_label(Di), # -> Feed D_50
             }
         if zorder is not None:
             kwargs['zorder'] = zorder
-        ax.axhline(settings.sum_feed_Di[Di], **kwargs)
+        feed_Di = settings.sum_feed_Di[Di] * multiple
+        ax.axhline(feed_Di, **kwargs)
+
+        if text is not None:
+            ax.annotate(text, xy=(1.25, feed_Di*1.01), xycoords='data')
 
     def get_feed_Di_label(self, Di):
         return rf"Feed $D_{{{Di[1:]}}}$"
@@ -443,6 +449,9 @@ class UniversalGrapher:
         elif y_name in ['depth', 'slope']:
             reload_fu = self.omnimanager.reload_depth_data
             fig_subdir = 'depth'
+        elif y_name in ['bed-D50', 'bed-D84']:
+            reload_fu = self.omnimanager.reload_gsd_data
+            fig_subdir = 'gsd'
         else:
             raise NotImplementedError
 
@@ -455,9 +464,6 @@ class UniversalGrapher:
     def plot_pseudo_hysteresis(self, y_name='D50', plot_2m=True):
         # Do stuff before plot loop
         x_name = 'pseudo discharge'
-        #y_name = 'Bedload all'
-        #y_name = 'D50'
-        #y_name = 'D84'
         roll_window = 10 #minutes
         #
         # note: plot_2m Only works for data with stationing (eg. depth data)
@@ -500,6 +506,12 @@ class UniversalGrapher:
                     'new_index' : ['exp_time', 'location'],
                     }
             all_data = self.gather_depth_data(gather_kwargs)
+        elif y_name in ['bed-D50', 'bed-D84']:
+            gather_kwargs = {
+                'columns'   : [y_name[-3:]],
+                'new_index' : ['exp_time', 'sta_str'],
+                }
+            all_data = self.gather_gsd_data(gather_kwargs)
         else:
             raise NotImplementedError
 
@@ -535,8 +547,12 @@ class UniversalGrapher:
             # Roll it
             roll_y_var = rolling_kwargs['y']
             rolled =  self.roll_data(data, rolling_kwargs)
-            data = data.assign(roll_mean=rolled.mean().values)
-            plot_kwargs['y'] = 'roll_mean'
+            if y_name == 'Bedload all':
+                data = data.assign(roll_median=rolled.median().values)
+                plot_kwargs['y'] = 'roll_median'
+            else:
+                data = data.assign(roll_mean=rolled.mean().values)
+                plot_kwargs['y'] = 'roll_mean'
 
         elif y_name in ['depth', 'slope']:
             # Based on depth data
@@ -556,6 +572,32 @@ class UniversalGrapher:
                 ols_out, flume_elevations = self._calc_retrended_slope(
                         keep_data, None, None)
                 data = ols_out
+        elif y_name in ['bed-D50', 'bed-D84']:
+            # Trim stations
+            sta_min, sta_max = (4.5, 6.5) if plot_2m else (0, 8)
+            sta_keep = [(t,s) for t,s in exp_data.index \
+                    if sta_min <= float(s.split('-')[1])/1000 <= sta_max]
+            raw_bed_data = exp_data.loc[sta_keep, :]
+            
+            # Get geom mean
+            log2_bed_data = np.log2(raw_bed_data)
+            log2_mean = log2_bed_data.groupby('exp_time').mean()
+            data = np.exp2(log2_mean)
+
+            # Make a geometric mean point at 270min (4.5hrs) so lines look 
+            # cleaner
+            index_vals = data.index.values
+            insert_index = index_vals.searchsorted(270)
+            before_index = index_vals[insert_index - 1]
+            after_index = index_vals[insert_index]
+            
+            yn = y_name[-3:]
+            log2_before = np.log2(data.loc[before_index, yn])
+            log2_after = np.log2(data.loc[after_index, yn])
+            data.loc[270, yn] = np.exp2((log2_before + log2_after)/2)
+            data.sort_index(inplace=True)
+
+            plot_kwargs['y'] = y_name[-3:]
         else:
             raise NotImplementedError
 
@@ -590,8 +632,9 @@ class UniversalGrapher:
                 f"Rising/falling = {limb_ratio:3.2f}"],
                 local_indent=1)
 
-        ## print latex table row
-        #print(f" {exp_code} & {rising_sum:3.0f} & {falling_sum:3.0f} & {limb_ratio:3.2f} \\\\")
+            # print latex table row
+            print(f" {exp_code} & {rising_sum:3.0f} & {falling_sum:3.0f} & " + \
+                  f"{(rising_sum+falling_sum):3.0f} & {limb_ratio:3.2f} \\\\")
 
         # Grab the default pyplot colors
         prop_cycle = plt.rcParams['axes.prop_cycle']
@@ -635,6 +678,14 @@ class UniversalGrapher:
             sieve_plot_kwargs['color'] = falling_color
             self.plot_group(sieve_falling, sieve_plot_kwargs)
 
+        elif y_name == 'bed-D84':
+            self.draw_feed_Di(ax, y_name[-3:])
+
+        elif y_name == 'bed-D50':
+            yn = y_name[-3:]
+            self.draw_feed_Di(ax, yn, multiple=1.0, text='Armor 1.0')
+            self.draw_feed_Di(ax, yn, multiple=1.5, text='Armor 1.5')
+
         # Turn on the grid
         self.generic_set_grid(ax, yticks_minor=True)
 
@@ -664,7 +715,7 @@ class UniversalGrapher:
     def _format_pseudo_hysteresis(self, fig, axs, plot_kwargs):
         # Format the figure after the plot loop
         fig_kwargs = {
-                'xlabel'        : r"Pseudo discharge",
+                'xlabel'        : r"Discharge",
                 'legend_labels' : [r"Rising", "Falling"],
                 }
 
@@ -683,6 +734,11 @@ class UniversalGrapher:
         elif y_name == 'slope':
             fig_kwargs['ylabel'] = rf"Slope (m/m)"
             fig_kwargs['title'] = rf"Pseudo hysteresis of slope"
+        elif y_name in ['bed-D50', 'bed-D84']: 
+            Di = plot_kwargs['y'][-3:]
+            fig_kwargs['ylabel'] = rf"$D_{{ {Di[1:]} }}$ (mm)"
+            fig_kwargs['title'] = rf"Pseudo hysteresis of bed surface {Di}"
+            fig_kwargs['legend_labels'].append(self.get_feed_Di_label(Di))
         else:
             raise NotImplementedError
         self.format_generic_figure(fig, axs, plot_kwargs, fig_kwargs)
@@ -706,21 +762,23 @@ class UniversalGrapher:
 
 
     # Functions to plot only dem data
-    def make_dem_subplots(self):
-        self.generic_make("dem semivariogram",
+    def make_dem_subplots(self, plot_2m=True):
+        self.generic_make("dem subplots",
                 self.omnimanager.reload_dem_data,
-                self.plot_dem_subplots, fig_subdir='dem_subplots')
+                self.plot_dem_subplots, plot_fu_kwargs={'plot_2m' : plot_2m},
+                fig_subdir='dem_subplots')
 
-    def plot_dem_subplots(self):
+    def plot_dem_subplots(self, plot_2m=True):
         # Can't use the generic_plot_experiments function because of the way I 
         # want to display and save them.
         plot_kwargs = {
                 }
         dem_gather_kwargs = {
-                'sta_lim'    : settings.stationing_2m,
                 'wall_trim'  : settings.dem_wall_trim,
                 }
 
+        if plot_2m:
+            dem_gather_kwargs['sta_lim'] = settings.stationing_2m
         dem_data = self.gather_dem_data(dem_gather_kwargs)
 
         # Calculate period ranks
@@ -730,54 +788,115 @@ class UniversalGrapher:
         get_ax_index = lambda l, d: get_rank(*[ranking[k] for k in (l, d)])
 
         # Generate a base file name
-        filename_base = f"dems_{{}}_2m.png"
+        length_str = '2m' if plot_2m else '8m'
+        filename_base = f"{length_str}_dems_{{}}.png"
 
         # Start plotting; 1 plot per experiment
         color_min, color_max = settings.dem_color_limits
-        exp_codes = list(dem_data.keys())
-        exp_codes.sort()
+        exp_codes = self.omnimanager.get_exp_codes()
         for exp_code in exp_codes:
             self.logger.write(f"Creating plots for {exp_code}")
             self.logger.increase_global_indent()
             
             # Create the subplot for this experiment
-            fig, axs = (plt.subplots(3, 3, sharey=True, sharex=True,
-                    figsize=(18,10)))
-            last_image=None
+            if plot_2m:
+                # make 3x3 grid
+                fig, axs = (plt.subplots(3, 3, sharey=True, sharex=True,
+                        figsize=(18,10)))
+            else:
+                # make 8x1 grid
+                fig, axs = plt.subplots(8, 1, sharey=True, sharex=True,
+                        figsize=(10,12))
+            first_image=None
             axs = axs.flatten()
 
-            # Calculate and plot the semivariograms for this experiment
+            # Plot the dems for this experiment
             for period_key, period_dem in dem_data[exp_code].items():
                 limb, discharge, time, exp_time = period_key
                 self.logger.write(f"Plotting {limb} {discharge} {time}")
                 assert(time == 't60')
                 ax = axs[get_ax_index(limb, discharge)]
 
-                ax.set_title(f"{limb} {discharge} {exp_time//60}hrs")
+                title_hr = exp_time//60
+                title_hr_str = f"{title_hr} {'hour' if title_hr == 1 else 'hours'}"
+                ax.set_title(f"{limb.capitalize()} {discharge} {title_hr_str}")
 
                 px_y, px_x = period_dem.shape
-                #ax.set_ybound(0, px_y)
-                ax.imshow(period_dem, vmin=color_min, vmax=color_max)
-                #ax.set_xlim(0, px_x)
-                #ax.set_ylim(0, px_y)
-                #plt.hist(data.flatten(), 50, normed=True)
-                #plt.xlim((120, 220))
+                ax.set_ybound(0, px_y)
+                img = ax.imshow(period_dem, vmin=color_min, vmax=color_max)
+                if first_image is None:
+                    first_image = img
 
+                # Convert axes from px to stationing
+                dem_res = settings.dem_resolution
+                ticker = mpl.ticker
+
+                # Convert x tick labels
+                dem_offset = settings.stationing_2m[0] if plot_2m else settings.dem_long_offset
+                dem_offset_mod = dem_offset%500#settings.dem_long_offset % 1000
+                long_fu = lambda x, p: f"{(x * dem_res + dem_offset) / 1000:1.1f}"
+                ax.xaxis.set_major_formatter(ticker.FuncFormatter(long_fu))
+
+                # Convert x tick locations
+                # Make the resulting tick locations at either 0.5 or 1 m 
+                # intervals (250px or 500px).
+                # Use MultipleLocator to easily generate tick locations then 
+                # correct for the dem offset
+                auto_locator = ticker.MultipleLocator(250 if plot_2m else 500)
+                auto_ticks = auto_locator.tick_values(0, px_x)[1:-1]
+                offset_ticks = auto_ticks - dem_offset_mod / dem_res
+                ax.xaxis.set_major_locator(ticker.FixedLocator(offset_ticks))
+
+                # Convert y tick labels
+                dem_trim = settings.dem_wall_trim
+                trav_fu = lambda x, p: f"{(x * dem_res + dem_trim):4.0f}"
+                trav_formatter = ticker.FuncFormatter(trav_fu)
+                ax.yaxis.set_major_formatter(trav_formatter)
+
+                y_locator = ticker.MultipleLocator(200)
+                ax.yaxis.set_major_locator(y_locator)
+                
             self.logger.decrease_global_indent()
 
             # Format the figure
-            xlabel = rf"Longitudinal distance (px)"
-            ylabel = rf"Transverse distance (px)"
-            title_str = rf"{exp_code} DEM 2m subsections with wall trim"
-            fontsize = 16
+            xlabel = rf"Longitudinal Station (m)"
+            ylabel = rf"Transverse Station (mm)"
+
+            min_tick = np.amin(offset_ticks)
+            max_tick = np.amax(offset_ticks)
+            plt.xlim((min(0, min_tick), max(px_x, max_tick)))
+            plt.ylim((0, px_y))
 
             plt.tight_layout()
-            fig.subplots_adjust(top=0.9, left=0.05, bottom=0.075, right=0.95)
-            plt.xlim((0, px_x))
-            plt.ylim((0, px_y))
-            
+            if plot_2m:
+                title_str = rf"{exp_code} DEM 2m subsections with wall trim"
+                if self.for_paper:
+                    fig.subplots_adjust(top=0.9, left=0.05,
+                                        bottom=0.075, right=0.95)
+                    fontsize = 16
+                    axs[-1].set_visible(False)
+                    plt.colorbar(first_image, ax=axs[-1], use_gridspec=True)
+                else:
+                    fig.subplots_adjust(top=0.9, left=0.05,
+                                        bottom=0.075, right=0.95)
+                    fontsize = 16
+            else:
+                title_str = rf"{exp_code} DEM 8m with wall trim"
+                if self.for_paper:
+                    fig.subplots_adjust(top=0.97, left=0.1,
+                                        bottom=0.05, right=0.95)
+                    fontsize = 16
+                    plt.colorbar(first_image, ax=list(axs), use_gridspec=True,
+                            aspect=35, pad=0.01, anchor=(0.9, 0.5))
+                    fig.subplots_adjust(right=0.9)
+                else:
+                    fig.subplots_adjust(top=0.9, left=0.1,
+                                        bottom=0.1, right=0.95)
+                    fontsize = 16
+
             # Make a title
-            plt.suptitle(title_str, fontsize=fontsize, usetex=True)
+            if not self.for_paper:
+                plt.suptitle(title_str, fontsize=fontsize, usetex=True)
 
             # Set common x label
             fig.text(0.5, 0.01, xlabel, ha='center', usetex=True,
@@ -786,7 +905,6 @@ class UniversalGrapher:
             # Set common y label
             fig.text(0.01, 0.5, ylabel, va='center', usetex=True,
                     fontsize=fontsize, rotation='vertical')
-            axs[-1].set_visible(False)
 
             # Save the figure
             filename = filename_base.format(exp_code)
@@ -794,6 +912,7 @@ class UniversalGrapher:
             self.save_figure(filename)
 
             #plt.show()
+            #assert(False)
 
 
     def make_dem_semivariogram_plots(self):
@@ -826,8 +945,7 @@ class UniversalGrapher:
         filename_base = f"dem_semivariograms_{{}}_{max_xlag}xlag-{max_ylag}ylag.png"
 
         # Start plotting; 1 plot per experiment
-        exp_codes = list(dem_data.keys())
-        exp_codes.sort()
+        exp_codes = self.omnimanager.get_exp_codes()
         for exp_code in exp_codes:
             self.logger.write(f"Creating semivariograms for {exp_code}")
             self.logger.increase_global_indent()
@@ -1072,8 +1190,7 @@ class UniversalGrapher:
 
         # Calculate stats
         dem_stats = {}
-        exp_codes = list(dem_data.keys())
-        exp_codes.sort()
+        exp_codes = self.omnimanager.get_exp_codes()
         for exp_code in exp_codes:
             self.logger.write(f"Calculating stats for {exp_code}")
             dem_stats[exp_code] = self._calc_dem_stats(exp_code, dem_data)
@@ -1328,6 +1445,146 @@ class UniversalGrapher:
 
 
     # Functions to plot only manual data
+    def make_mobility_plots(self, t_interval='period'):
+        # Plot mobility 
+        assert(t_interval in ['period', 'step'])
+        plot_fu_kwargs = {
+                't_interval' : t_interval
+                }
+        def reload_fu():
+            self.omnimanager.reload_gsd_data()
+            self.omnimanager.reload_sieve_data()
+        self.generic_make("mobility",
+                reload_fu,
+                self.plot_mobility, plot_fu_kwargs=plot_fu_kwargs,
+                fig_subdir='synthesis')
+
+    def plot_mobility(self, t_interval = 'D50'):
+        # Do stuff before plot loop
+        sizes = [0.5, 0.71, 1, 1.41, 2, 2.83, 4, 5.66, 8, 11.2, 16, 22.3, 32]
+        x_name = 'Dgm'
+        plot_kwargs = {
+                'x'      : x_name,
+                #'kind'   : 'scatter',
+                'legend' : False,
+                }
+        # Add to plot_kwargs as a hacky way to get info to _plot function
+        plot_kwargs['t_interval'] = t_interval
+
+        # Collect the data
+        gsd_gather_kwargs = {
+                'columns'   : sizes,
+                'new_index' : ['exp_time', 'sta_str'],
+                }
+        data = {
+                'gsd' : self.gather_gsd_data(gsd_gather_kwargs),
+                'sieve' : self.gather_sieve_data({'columns' : sizes}),
+                }
+
+        # Make a filename
+        filename_x = x_name.replace('_', '-').lower()
+        figure_name = f"mobility_{t_interval}_v_{filename_x}.png"
+
+        # Start plot loop
+        self.generic_plot_experiments(
+            self._plot_mobility, self._format_mobility, 
+            data, plot_kwargs, figure_name)
+
+    def _plot_mobility(self, exp_code, data, plot_kwargs):
+        # Do stuff during plot loop
+        # Plot an experiment
+        ax = plot_kwargs['ax']
+        plot_kwargs = plot_kwargs.copy()
+        t_interval = plot_kwargs.pop('t_interval')
+
+        # Get the data
+        surf_gsd_data = data['gsd'][exp_code]
+        bedload_gsd_data = data['sieve'][exp_code]
+
+        # Collapse the surf_gsd data to just time
+        surf_gsd_data = surf_gsd_data.groupby(level='exp_time').sum()
+
+        # Partially collapse time if desired
+        dt = 60 if t_interval == 'step' else 20
+        bins = np.arange(60, 8*60+dt, dt)
+        def sum_interval(data):
+            intervals = np.digitize(data.index, bins, right=True)
+            summed = data.groupby(intervals).sum()
+            bins_used = [bins[i] for i in summed.index.values]
+            summed.index = pd.Index(bins_used, name='exp_time')
+            return summed
+        surf_gsd_data = sum_interval(surf_gsd_data)
+        bedload_gsd_data = sum_interval(bedload_gsd_data)
+
+        # Make Dgm
+        surf_col_values = surf_gsd_data.columns.values
+        bedload_col_values = bedload_gsd_data.columns.values
+        assert(np.all(surf_col_values == bedload_col_values))
+        upper = surf_col_values
+        lower = np.roll(upper, 1)
+        lower[0] = 0.001
+        Dgm = np.exp2((np.log2(upper) + np.log2(lower))/2)
+
+        # surf is by count, bedload is by mass.
+        # approximate mass per rock based on geometric mean size
+        # assume sphere?
+        ### How to convert them properly???
+        Dg_mass_np = settings.sediment_density * 4000/3 * np.pi *(Dgm/2000)**3
+        #[print(f"{m:10.5f} -> {d:10.2f} mm") for m, d in zip(Dg_mass, Dgm)]
+        Dg_mass = pd.Series(Dg_mass_np, index=surf_gsd_data.columns)
+        surf_gsd_mass = surf_gsd_data.multiply(Dg_mass)
+
+        # Convert both to fractional values
+        def make_fractional(data):
+            return data.div(data.sum(axis=1), axis=0)
+        surf_fractional = make_fractional(surf_gsd_mass)
+        bedload_fractional = make_fractional(bedload_gsd_data)
+
+        # Calculate mobility
+        mobility = bedload_fractional / surf_fractional
+        mobility[surf_fractional == 0] = np.nan
+
+        # Change index and columns
+        exp_times = mobility.index.values
+        mobility.index = pd.Index(exp_times/60, name='exp_time_hrs')
+        mobility.columns = pd.Index(Dgm, name='Dgm')
+
+        # Plot it
+        plot_kwargs['y'] = bins/60
+        if t_interval == 'step':
+            # only 8 lines, give each line a color
+            plot_kwargs['marker'] = 'x'
+            if exp_code == '5A':
+                # Bad form.... but watevs
+                plot_kwargs['legend'] = True
+            color_idx = np.linspace(0, 1, num=len(exp_times))
+            colorset = [plt.cm.cool_r(i) for i in color_idx]
+            plot_kwargs['color'] = colorset
+        else:
+            # Too many lines, plot points instead
+            plot_kwargs['linestyle'] = 'None'
+            plot_kwargs['marker'] = '.'
+            plot_kwargs['color'] = 'k'
+
+        mobility = (mobility.T).reset_index()
+        mobility.plot(**plot_kwargs)
+        #ax.set_ylim((0, 4))
+        ax.set_xlabel('')
+        self.generic_set_grid(ax)
+        #self.plot_group(mobility.T, plot_kwargs)
+
+    def _format_mobility(self, fig, axs, plot_kwargs):
+        # Format the figure after the plot loop
+        fig_kwargs = {
+                'xlabel'        : r"Geometric grain size (mm)",
+                'ylabel'        : r"$\frac{P_i}{f_i}$",
+                'title'         : r"Mobility of each grain size class",
+                'legend_labels' : [r"mobility"],
+                #'legend_labels' : [r"Shear from surface"],
+                }
+        self.format_generic_figure(fig, axs, plot_kwargs, fig_kwargs)
+
+
     def make_loc_shear_plots(self):
         self.logger.write([f"Making shear time plots..."])
 
@@ -1467,6 +1724,110 @@ class UniversalGrapher:
         #            loc='center right')
 
 
+    def make_shields_plots(self, plot_2m=True, Di_target='D50'):
+        # Plot shields 
+        plot_fu_kwargs = {
+                'plot_2m' : plot_2m,
+                'Di_target' : Di_target
+                }
+        def reload_fu():
+            self.omnimanager.reload_depth_data()
+            self.omnimanager.reload_sieve_data()
+        self.generic_make("shields",
+                reload_fu,
+                self.plot_shields, plot_fu_kwargs=plot_fu_kwargs,
+                fig_subdir='synthesis')
+
+    def plot_shields(self, plot_2m=True, Di_target = 'D50'):
+        # Do stuff before plot loop
+        x_name = 'exp_time'
+        y_name = 'shields'
+        plot_kwargs = {
+                'x'      : x_name,
+                'y'      : y_name,
+                #'kind'   : 'scatter',
+                'legend' : False,
+                }
+        # Add to plot_kwargs as a hacky way to get info to _plot function
+        plot_kwargs['plot_2m'] = plot_2m
+        plot_kwargs['Di_target'] = Di_target
+
+        # Collect the data
+        depth_gather_kwargs = {
+                'new_index' : ['exp_time', 'location'],
+                }
+        data = {
+                'depth' : self.gather_depth_data(depth_gather_kwargs),
+                'sieve' : self.gather_sieve_data({}),
+                }
+
+        # Make a filename
+        filename_x = x_name.replace('_', '-').lower()
+        filename_y = y_name.replace('_', '-').lower()
+        plot_2m_str = '2m_' if plot_2m else ''
+        figure_name = f"{plot_2m_str}{filename_y}_{Di_target}_v_{filename_x}.png"
+
+        # Start plot loop
+        self.generic_plot_experiments(
+            self._plot_shields, self._format_shields, 
+            data, plot_kwargs, figure_name)
+
+    def _plot_shields(self, exp_code, data, plot_kwargs):
+        # Do stuff during plot loop
+        # Plot an experiment
+        ax = plot_kwargs['ax']
+        plot_kwargs = plot_kwargs.copy()
+        plot_2m = plot_kwargs.pop('plot_2m')
+        Di_target = plot_kwargs.pop('Di_target')
+
+        # Get the data
+        cm2m = 1/100
+        depth_data = data['depth'][exp_code] * cm2m
+        sieve_data = data['sieve'][exp_code]
+
+        # surface elevations for flume avg slope
+        surf = depth_data.xs('surface', level='location')
+
+        # avg depth values in 2m subset.
+        sta_min, sta_max = (4.5, 6.5) if plot_2m else (0, 8)
+        sta_keep = [s for s in depth_data.columns if sta_min <= s <= sta_max]
+        depth = depth_data.xs('depth', level='location').loc[:, sta_keep]
+        avg_depths = depth.mean(axis=1)
+
+        # T* = T / [(rhos - rhow) * g * D50
+        # T = rhow * g * R * S
+        # T* = [rhow * R * S] / [(rhos - rhow) * D]
+        rhow = settings.water_density
+        rhos = settings.sediment_density
+        w = settings.flume_width
+
+        R = w * avg_depths / (w + 2 * avg_depths)
+
+        ols_stats, flume_elevations = self._calc_retrended_slope(surf)
+        S = ols_stats['slope']
+
+        Di = self.calc_Di(sieve_data, target_Di=Di_target) / 1000 # mm2m
+        
+        RS = R * S
+        RS.index = RS.index + 10
+        shields_series = (rhow * RS) / ((rhos - rhow) * Di)
+        shields = shields_series.to_frame(name='shields')
+
+        self.plot_group(shields, plot_kwargs)
+
+    def _format_shields(self, fig, axs, plot_kwargs):
+        # Format the figure after the plot loop
+        Di_target = plot_kwargs['Di_target']
+        fig_kwargs = {
+                'xlabel'        : r"Experiment time (hours)",
+                'ylabel'        : r"$\tau^*$",
+                'title'         : r"Shields stress from bedload {Di_target}",
+                'legend_labels' : [r"Shields stress"],
+                #'legend_labels' : [r"Shear from surface"],
+                }
+        self.format_generic_figure(fig, axs, plot_kwargs, fig_kwargs)
+
+
     def make_flume_shear_plots(self):
         self.logger.write([f"Making flume-averaged shear time plots..."])
 
@@ -1510,6 +1871,7 @@ class UniversalGrapher:
         # Do stuff during plot loop
         # Plot an experiment
         ax = plot_kwargs['ax']
+        cm2m = 1/100
 
         # Get the data
         exp_data = depth_data[exp_code] * cm2m
@@ -1897,6 +2259,7 @@ class UniversalGrapher:
 
         # Not actually grouped, but can still use self.plot_group
         self.plot_group(masses_data[exp_code], plot_kwargs)
+        self.generic_set_grid(plot_kwargs['ax'])
 
     def _format_simple_masses(self, fig, axs, plot_kwargs):
         # Format the figure after the plot loop
@@ -2069,6 +2432,7 @@ class UniversalGrapher:
     def gather_sieve_data(self, kwargs):
         # Gather all the sieve data into a dict of dataframes separated by 
         # exp_code
+        cols = kwargs['columns'] if 'columns' in kwargs else None
         self.sieve_data_frames = {}
         self.omnimanager.apply_to_periods(self._gather_sieve_data, kwargs)
 
@@ -2076,7 +2440,10 @@ class UniversalGrapher:
         sieve_data = {}
         for exp_code, frames in self.sieve_data_frames.items():
             combined_data = pd.concat(frames)
-            sieve_data[exp_code] = combined_data.sort_index()
+            exp_data = combined_data.sort_index()
+            if cols is not None:
+                exp_data = exp_data.loc[:, cols]
+            sieve_data[exp_code] = exp_data
         return sieve_data
 
     def _gather_sieve_data(self, period, kwargs):
@@ -2196,8 +2563,7 @@ class UniversalGrapher:
         fig, axs = self.create_experiment_subplots()
 
         # Make one plot per experiment
-        exp_codes = list(gsd_data.keys())
-        exp_codes.sort()
+        exp_codes = self.omnimanager.get_exp_codes()
         for exp_code, ax in zip(exp_codes, axs.flatten()):
             self.logger.write(f"Plotting experiment {exp_code}")
 
@@ -2312,8 +2678,7 @@ class UniversalGrapher:
         fig, axs = self.create_experiment_subplots()
 
         # Make one plot per experiment
-        exp_codes = list(gsd_data.keys())
-        exp_codes.sort()
+        exp_codes = self.omnimanager.get_exp_codes()
         self.plot_labels = []
         for exp_code, ax in zip(exp_codes, axs.flatten()):
             #if exp_code != '2B':
@@ -2489,7 +2854,12 @@ class UniversalGrapher:
             self.plot_group(time_mean, mean_kwargs)
 
         ax = plot_kwargs['ax']
-        self.draw_feed_Di(ax, plot_kwargs['y'])
+        if y_name == 'D84':
+            self.draw_feed_Di(ax, plot_kwargs['y'])
+        elif y_name == 'D50':
+            yn = y_name[-3:]
+            self.draw_feed_Di(ax, yn, multiple=1.0, text='Armor 1.0')
+            self.draw_feed_Di(ax, yn, multiple=1.5, text='Armor 1.5')
         ax.locator_params(axis='y', steps=[1,2,5, 10], min_n_ticks=3)
         self.generic_set_grid(ax)
 
@@ -2517,24 +2887,32 @@ class UniversalGrapher:
         gsd_data = {}
         for exp_code, frames in kwargs['gsd_frames'].items():
             gsd_data[exp_code] = pd.concat(frames)
-            gsd_data[exp_code].sort_index(level=kwargs['new_index'][0],
-                    inplace=True)
+            if 'new_index' in kwargs:
+                gsd_data[exp_code].sort_index(level=kwargs['new_index'][0],
+                        inplace=True)
+            else:
+                gsd_data[exp_code].sort_index()
+
         return gsd_data
 
     def _gather_gsd_time_data(self, period, kwargs):
         # Have periods add themselves to a precursor of the overall gsd 
         # dataframe dict
-        cols = kwargs['columns']
-        new_index = kwargs['new_index']
+        cols = kwargs['columns'] if 'columns' in kwargs else None
+        new_index = kwargs['new_index'] if 'new_index' in kwargs else None
         exp_code = period.exp_code
 
         data = period.gsd_data
         if data is not None:
-            data.reset_index(inplace=True)
-            data.set_index(new_index, inplace=True)
+            if new_index is not None:
+                data.reset_index(inplace=True)
+                data.set_index(new_index, inplace=True)
             if exp_code not in kwargs['gsd_frames']:
                 kwargs['gsd_frames'][exp_code] = []
-            kwargs['gsd_frames'][exp_code].append(data.loc[:, cols])
+            if cols is None:
+                kwargs['gsd_frames'][exp_code].append(data.loc[:, :])
+            else:
+                kwargs['gsd_frames'][exp_code].append(data.loc[:, cols])
 
 
     # Functions to plot only Qs data
@@ -2595,8 +2973,7 @@ class UniversalGrapher:
         fig, axs = self.create_experiment_subplots(rows=2, cols=4)
         
         # Make one plot per experiment
-        exp_codes = list(qs_data.keys())
-        exp_codes.sort()
+        exp_codes = self.omnimanager.get_exp_codes()
         for exp_code, ax in zip(exp_codes, axs.flatten()):
             self.logger.write(f"Plotting experiment {exp_code}")
 
@@ -2679,8 +3056,7 @@ class UniversalGrapher:
         fig, axs = self.create_experiment_subplots(rows=2, cols=4)
         
         # Make one plot per experiment
-        exp_codes = list(qs_data.keys())
-        exp_codes.sort()
+        exp_codes = self.omnimanager.get_exp_codes()
         for exp_code, ax in zip(exp_codes, axs.flatten()):
             self.logger.write(f"Plotting experiment {exp_code}")
 
@@ -2696,6 +3072,9 @@ class UniversalGrapher:
             rolled_data = self.roll_data(accumulated_data,
                     roll_kwargs=rolling_kwargs)
 
+            rolling_median = rolled_data.median()
+            rolling_75p = rolled_data.quantile(quantile=0.75)
+            rolling_25p = rolled_data.quantile(quantile=0.25)
             rolling_mean = rolled_data.mean()
             rolling_stddev = rolled_data.std()
 
@@ -2709,9 +3088,14 @@ class UniversalGrapher:
                                         if k not in ['x', 'y', 'kind']}
             #series_plot_kwargs['xlim'] = ax.get_xlim()
             #series_plot_kwargs['style'] = 'r'
-            rolling_mean.plot(label='Mean', style='b', **series_plot_kwargs)
-            (rolling_mean + rolling_stddev).plot(label="Mean + Stddev",
-                    style='c', **series_plot_kwargs)
+
+            rolling_75p.plot(label=r"75^{th} Percentile", style='c', **series_plot_kwargs)
+            rolling_25p.plot(label=r"25^{th} Percentile", style='c', **series_plot_kwargs)
+            rolling_median.plot(label='Median', style='b', **series_plot_kwargs)
+
+            #rolling_mean.plot(label='Mean', style='b', **series_plot_kwargs)
+            #(rolling_mean + rolling_stddev).plot(label="Mean + Stddev",
+            #        style='c', **series_plot_kwargs)
             #plot_stddev(rolling_mean, rolling_stddev, "Mean + Stddev", series_plot_kwargs)
             #plot_stddev(rolling_mean, rolling_stddev*5, "5x Stddev envelope", series_plot_kwargs)
 
@@ -2817,8 +3201,7 @@ class UniversalGrapher:
         fig, axs = self.create_experiment_subplots(rows=4, cols=2)
         
         # Make one plot per experiment
-        exp_codes = list(qs_data.keys())
-        exp_codes.sort()
+        exp_codes = self.omnimanager.get_exp_codes()
         for exp_code, ax in zip(exp_codes, axs.flatten()):
             self.logger.write(f"Plotting experiment {exp_code}")
 
@@ -2937,8 +3320,7 @@ class UniversalGrapher:
         #twin_axes = []
 
         # Make one plot per experiment
-        exp_codes = list(self.omnimanager.experiments.keys())
-        exp_codes.sort()
+        exp_codes = self.omnimanager.get_exp_codes()
         for exp_code, ax in zip(exp_codes, axs.flatten()):
             self.logger.write(f"Plotting experiment {exp_code}")
 
@@ -3063,7 +3445,7 @@ class UniversalGrapher:
             #[253, 218, 236],
             ]))
         #[print(c) for c in colors]
-        exp_codes = list(qs_data.keys())
+        exp_codes = self.omnimanager.get_exp_codes()
         exp_codes.sort(reverse=True)
         offsets = {c: -o for c, o in zip(exp_codes, range(len(exp_codes)))}
         assert(len(exp_codes) <= len(colors))
@@ -3281,8 +3663,7 @@ class UniversalGrapher:
         #          }
 
         ## Make one plot per experiment
-        #exp_codes = list(self.omnimanager.experiments.keys())
-        #exp_codes.sort()
+        #exp_codes = list(qs_data.keys())
         #max_val = 0
         #for exp_code, ax in zip(exp_codes, axs.flatten()):
         #    self.logger.write(f"Plotting experiment {exp_code}")
@@ -3439,6 +3820,8 @@ class UniversalGrapher:
         #print(feed_cumsum.astype(np.int))
         #print(feed_cumsum.astype(np.int)[8])
         #print([int(calc_cumsum_feed(t)) for t in [0,1.5,2,2.5,3,8]])
+        min_mb = mass_balance.min()
+        print(f"Min mass balance for exp {exp_code} = {min_mb}")
 
         # Plot it!
         self._time_plot_prep(data, plot_kwargs)
@@ -3496,8 +3879,7 @@ class UniversalGrapher:
         twin_axes = []
 
         # Make one plot per experiment
-        exp_codes = list(self.omnimanager.experiments.keys())
-        exp_codes.sort()
+        exp_codes = list(qs_data.keys())
         max_val = 0
         for exp_code, ax in zip(exp_codes, axs.flatten()):
             self.logger.write(f"Plotting experiment {exp_code}")
@@ -3580,8 +3962,7 @@ class UniversalGrapher:
                   }
 
         # Make one plot per experiment
-        exp_codes = list(self.omnimanager.experiments.keys())
-        exp_codes.sort()
+        exp_codes = list(qs_data.keys())
         for exp_code, ax in zip(exp_codes, axs.flatten()):
             self.logger.write(f"Plotting experiment {exp_code}")
 
@@ -3632,6 +4013,91 @@ class UniversalGrapher:
         return Qs_data
 
 
+    def make_yield_feed_plot(self):
+        # Very hacky plotting function....
+
+        #labels = ['1A', '1B', '2A', '3A', '3B', '4A', '5A',]
+        rfeed  = [   0,    0,  400,  700,  700,  100,  400,]
+        ryield = [ 521,  479,  707,  873,  830,  277,  631,]
+        ffeed  = [   0,    0,  400,  100,  100,  700,  400,]
+        fyield = [  93,   82,   92,  309,  226,  319,  274,]
+        #plt.scatter(rfeed, ryield, label='Rising Limb')
+        #plt.scatter(ffeed, fyield, label='Falling Limb')
+        #plt.ylabel('Bedload Transport Yield (kg)')
+        #plt.xlabel('Total Sediment Feed for Limb (kg)')
+        #plt.show()
+
+        # Calculate ols trends. Save for plotting later.
+        ols_lines = {}
+        for lfeed, lyield, lname in [[rfeed, ryield, "Rising"], [ffeed, fyield, "Falling"]]:
+            series = pd.Series(lyield, index=pd.Index(lfeed,
+                name=f'{lname} Feed'), name=f'{lname} Yield')
+            ols_out = self._ols(series)
+            print(ols_out)
+            ols_lines[lname] = ols_out
+
+        data = {
+             #label: [[ rf,  ff], [ ry,  fy]]
+              '1A' : [[  0,   0], [521,  93]],
+              '1B' : [[  0,   0], [479,  82]],
+              '2A' : [[400, 400], [707,  92]],
+              '3A' : [[700, 100], [873, 309]],
+              '3B' : [[700, 100], [830, 226]],
+              '4A' : [[100, 700], [277, 319]],
+              '5A' : [[400, 400], [631, 274]],
+              }
+
+        figure = plt.figure()
+        ax = plt.gca()
+        colors = list(plt.get_cmap('Dark2').colors)
+        legend_points = []
+        legend_labels = []
+        handler_map = {}
+        for exp_code, exp_data in data.items():
+            lfeed, lyield = exp_data
+            rf, ff = lfeed
+            ry, fy = lyield
+            color = colors.pop(0)
+
+            rp = plt.scatter(rf, ry, marker='P', color=color)
+            fp = plt.scatter(ff, fy, marker='s', color=color)
+
+            legend_points.append((rp, fp))
+            legend_labels.append(f"{exp_code}")
+        
+        for name, ols_out in ols_lines.items():
+            xlim = np.array(plt.xlim())
+            m = ols_out['slope']
+            b = ols_out['intercept']
+            rsqr = ols_out['r-sqr']
+            line_fu = lambda x: m*x + b
+            y = line_fu(xlim)
+            lstyle = '-' if name == 'Rising' else '--'
+            plt.plot(xlim, y, color='k', linestyle=lstyle)
+            plt.xlim(xlim)
+
+            an_x = 250
+            an_y = line_fu(an_x)
+            label = rf"{name} Limb ($r^2 = {rsqr:0.2f}$)" + '\n' + \
+                    rf"$y = {m:0.2f}x + {b:0.0f}$"
+            print(an_x, an_y, label)
+            ax.annotate(label,
+                    xy=(an_x, an_y), xycoords='data',
+                    xytext=(-75, 50), textcoords='offset pixels',
+                    horizontalalignment='left', verticalalignment='top',
+                    )
+
+        plt.legend(legend_points, legend_labels)
+        plt.ylabel('Bedload Transport Yield (kg)')
+        plt.xlabel('Total Sediment Feed for Limb (kg)')
+
+        self.figure_subdir = self.figure_subdir_dict['synthesis']
+        figure_name = "yield_vs_feed.png"
+        self.save_figure(figure_name)
+
+        plt.show()
+
+
     # General functions to be given to PeriodData instances
     def _generate_hydrograph(self, period_data, kwargs={}):
         # Generate a hydrograph series for plotting later
@@ -3677,28 +4143,34 @@ if __name__ == "__main__":
     #grapher.make_sieve_di_plots(Di=84)
     #grapher.make_simple_sieve_plots()
     #grapher.make_simple_masses_plots()
-    #grapher.make_dem_subplots()
+    #grapher.make_dem_subplots(plot_2m=True)
+    #grapher.make_dem_subplots(plot_2m=True)
     #grapher.make_dem_semivariogram_plots()
     #grapher.make_dem_stats_plots()
     #grapher.make_dem_stats_plots()
     #grapher.make_dem_roughness_plots()
     #grapher.make_loc_shear_plots()
     #grapher.make_flume_shear_plots()
+    #grapher.make_mobility_plots(t_interval='step')
+    #grapher.make_shields_plots(Di_target='D50')
     #grapher.make_avg_depth_plots(plot_2m=True)
     #grapher.make_avg_slope_plots(plot_2m=False, plot_trends='surface')
     #!grapher.make_box_gsd_plots(x_name='exp_time', y_name='D50')
     #!grapher.make_box_gsd_plots(x_name='sta_str',  y_name='D50')
     #!grapher.make_mean_gsd_time_plots(y_name=['D16', 'D50', 'D84'])
     #!grapher.make_mean_gsd_time_plots(y_name=['Fsx'])#, 'D90'])
-    #grapher.make_gsd_plots(x_name='exp_time', y_name='D50')
+    #grapher.make_gsd_plots(x_name='exp_time', y_name='D84')
     #!grapher.make_gsd_plots(x_name='sta_str',  y_name='D50')
-    #grapher.make_manual_Di_plots()
+    #!grapher.make_manual_Di_plots()
     #grapher.make_Qs_plots()
     #grapher.make_Di_ratio_plots()
     #!grapher.make_experiment_plots()
     #!grapher.make_bedload_feed_plots()
-    grapher.make_pseudo_hysteresis_plots(y_name='slope', plot_2m=False)
+    #grapher.make_pseudo_hysteresis_plots(y_name='bed-D50', plot_2m=True)
+    #grapher.make_pseudo_hysteresis_plots(y_name='depth', plot_2m=False)
+    #grapher.make_pseudo_hysteresis_plots(y_name='Bedload all', plot_2m=False)
     #!grapher.make_hysteresis_plots()
     #!grapher.make_cumulative_plots()
     #grapher.make_cumulative_mass_bal_plots()
     #!grapher.make_transport_histogram_plots()
+    grapher.make_yield_feed_plot()
