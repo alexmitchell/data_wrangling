@@ -4,4 +4,4 @@ matplotlib
 xlrd==1.0.0
 seaborn==0.8.1
 pandas
-
+scikit-learn

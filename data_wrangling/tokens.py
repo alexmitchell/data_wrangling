@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 # From Helpyr
-from helpyr_misc import nsplit
+from helpyr.helpyr_misc import nsplit
 
 import global_settings as settings
 

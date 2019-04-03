@@ -2,8 +2,9 @@
 
 import os
 
+from helpyr.data_loading import DataLoader
+
 from tokens import PeriodData, Experiment
-from data_loading import DataLoader
 import global_settings as settings
 
 # This class is meant to manage the creation and updating of the omnipickle.  
