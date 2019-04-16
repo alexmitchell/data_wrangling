@@ -62,4 +62,8 @@ cart_pickles_dir = pjoin(cart_data_dir, "cart-pickles")
 manual_data_dir = pjoin(root_dir, "manual-data")
 manual_pickles_dir = pjoin(manual_data_dir, "manual-pickles")
 
+# pca output data dirs
+pca_dir = pjoin(root_dir, "pca")
+pca_pickle_dir = pjoin(pca_dir, "pca-pickles")
+
 
