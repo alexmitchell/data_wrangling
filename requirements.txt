@@ -1,7 +1,6 @@
-statsmodels==0.8.0
+statsmodels
 numpy
 matplotlib
-xlrd==1.0.0
-seaborn==0.8.1
+xlrd
 pandas
 scikit-learn
