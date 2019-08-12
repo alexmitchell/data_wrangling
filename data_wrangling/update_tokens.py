@@ -4,7 +4,7 @@ from os.path import join as pjoin
 from time import asctime
 
 # From helpyr
-from logger import Logger
+from helpyr.logger import Logger
 
 from omnipickle_manager import OmnipickleManager
 import global_settings as settings

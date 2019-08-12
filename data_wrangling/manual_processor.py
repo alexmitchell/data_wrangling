@@ -12,13 +12,12 @@ from xlrd.biffh import XLRDError
 #import statsmodels.api as sm
 
 # From helpyr
-from data_loading import DataLoader
-from logger import Logger
-from crawler import Crawler
-from helpyr_misc import ensure_dir_exists
+from helpyr.data_loading import DataLoader
+from helpyr.logger import Logger
+from helpyr.crawler import Crawler
+from helpyr.helpyr_misc import ensure_dir_exists
 
 from omnipickle_manager import OmnipickleManager
-from crawler import Crawler
 import global_settings as settings
 
 
@@ -83,14 +82,14 @@ class ManualProcessor:
         indent_function = self.logger.run_indented_function
 
         self.all_depth_data = {} # {exp_code : dataframe}
-        #indent_function(self._load_depth_xlsx,
-        #        before_msg="Loading depth data",
-        #        after_msg="Depth data extraction complete")
+        indent_function(self._load_depth_xlsx,
+                before_msg="Loading depth data",
+                after_msg="Depth data extraction complete")
 
         self.all_masses_data = {} # {exp_code : dataframe}
-        #indent_function(self._load_masses_xlsx,
-        #        before_msg="Loading mass data...",
-        #        after_msg="Finished loading mass data!")
+        indent_function(self._load_masses_xlsx,
+                before_msg="Loading mass data...",
+                after_msg="Finished loading mass data!")
 
         self.all_sieve_data = {} # {exp_code : dataframe}
         self.all_feed_data = {} # {exp_code : dataframe}
@@ -100,12 +99,12 @@ class ManualProcessor:
 
     def _load_sieve_xlsx(self):
         kwargs = {
-                'sheetname'  : 'Clean',
+                'sheet_name'  : 'Clean',
                 'header'     : 0,
                 'skiprows'   : 5,
-                'skip_footer': 3,
+                'skipfooter': 3,
                 'index_col'  : None,
-                'parse_cols' : 'A:B',
+                'usecols' : 'A:B',
                 }
 
         #self.logger.write("Removing old references")
@@ -121,6 +120,9 @@ class ManualProcessor:
             sieve_path, sieve_filename = psplit(sieve_filepath)
             parts = (sieve_filename.split('.')[0]).split('_')
 
+            self.logger.write(f"Extracting {sieve_filename}")
+            self.logger.increase_global_indent()
+
             is_feed = 'feed' in sieve_filename
 
             if is_feed:
@@ -133,7 +135,14 @@ class ManualProcessor:
                         }
             else:
                 exp_code, step = parts[0:2]
-                ptime = int(''.join(c for c in parts[2] if c.isdigit()))
+                try:
+                    ptime = int(''.join(c for c in parts[2] if c.isdigit()))
+                except ValueError:
+                    self.logger.write_blankline()
+                    self.logger.write(f"## Filename error: {sieve_filename}.")
+                    self.logger.write(f"## Split produces: {parts}")
+                    self.logger.write_blankline()
+                    raise NotImplementedError
 
                 if len(parts) == 3:
                     # No sample label, assume sample 1
@@ -160,8 +169,6 @@ class ManualProcessor:
                         'sample'   : sample,
                         }
 
-            self.logger.write(f"Extracting {sieve_filename}")
-
             # Read and prep raw data
             data = self.loader.load_xlsx(sieve_filepath, kwargs, add_path=False)
             data = self._reformat_sieve_data(data, **meta_kwargs)
@@ -177,6 +184,8 @@ class ManualProcessor:
                 else:
                     sieve_data[exp_code] = [data]
 
+            self.logger.decrease_global_indent()
+
         for exp_code, frames in sieve_data.items():
             combined_data = pd.concat(frames)
             self.all_sieve_data[exp_code] = combined_data.sort_index()
@@ -189,7 +198,8 @@ class ManualProcessor:
         # Clean up the data by providing experiment timestamps, sorting, and 
         # fixing zero values.
         # kwargs must have exp_code, step, ptime, and sample variables
-        self.logger.write("Reformatting data")
+        lwrite = self.logger.write
+        lwrite("Reformatting data")
 
         exp_code = kwargs['exp_code']
         sample = kwargs['sample']
@@ -202,25 +212,69 @@ class ManualProcessor:
         # Rename column labels and names
         data.columns = ['size (mm)', 'mass (g)']
 
+        # Look for empty rows, that means the file was formatted incorrectly
+        if data.loc[:,'size (mm)'].isnull().any():
+            lwrite("## Empty rows found, file not formatted correctly.")
+            lwrite("## Attempting to continue...")
+
+            # Drop empty rows. Doesn't normally happen, but there is a case
+            empty_rows = data.index[data.loc[:,'size (mm)'].isnull()]
+            data.drop(empty_rows, inplace=True)
+
         # Shift sizes so it represents pass through rather than retained
         pan_index = data['size (mm)'] == 'pan'
-        pan = data.loc[pan_index, 'mass (g)'].iloc[0]
-        data['size (mm)'].values[1:] = data['size (mm)'].values[:-1]
+        if not pan_index.any():
+            lwrite("Can't find pan value")
+            lwrite(data)
+            raise NotImplementedError
+        else:
+            pan = data.loc[pan_index, 'mass (g)'].iloc[0]
+            data['size (mm)'].values[1:] = data['size (mm)'].values[:-1]
 
         # Identify rows outside of the acceptable size range
         sizes = data['size (mm)']
-        outside = (sizes < 0.5) | (64 <= sizes)
+        try:
+            outside_small = sizes < 0.5
+        except TypeError:
+            raise
+        outside_big = 64 <= sizes
 
-        outside_data = data.loc[outside & ~pan_index, 'mass (g)']
-        if (outside_data.notnull() & (outside_data != 0)).any():
-            print('Impossible masses found')
-            print(f"{exp_code} {step} {ptime}")
-            print(data)
-            assert(False)
+        outside_big_data = data.loc[outside_big, 'mass (g)']
+        if (outside_big_data.notnull() & (outside_big_data != 0)).any():
+            lwrite('Sieved masses for grains >= 64 mm found, aborting')
+            lwrite(f"{exp_code} {step} {ptime}")
+            lwrite(data)
+            raise NotImplementedError
+
+        outside_small_data = data.loc[outside_small & ~pan_index, 'mass (g)']
+        if np.isnan(pan):
+            lwrite("Pan data in unusual location, attempting to find it...")
+            self.logger.increase_global_indent()
+            pan_choices = outside_small_data[outside_small_data > 0]
+            if pan_choices.size != 1:
+                lwrite("No or multiple options found, aborting!")
+                lwrite(data)
+                raise NotImplementedError
+
+            pan = pan_choices.iloc[0]
+            new_pan_index = pan_choices.index.values[0]
+            outside_small_data[new_pan_index] = 0
+            data.loc[new_pan_index, 'mass (g)'] = 0
+
+            lwrite(f"New pan value is {pan}")
+            self.logger.decrease_global_indent()
+
+        if (outside_small_data.notnull() & (outside_small_data != 0)).any():
+            lwrite('Sieved masses for grains < 0.5 mm found')
+            lwrite(f"{exp_code} {step} {ptime}")
+            lwrite(f"Pan mass = {pan}")
+            lwrite(data)
+
+            raise NotImplementedError
 
         # Remove >= 64 because they are impossible
         # Remove < 0.5 because they are not measured, but keep pan
-        data.drop(data.index[outside], inplace=True)
+        data.drop(data.index[outside_big | outside_small], inplace=True)
         # set 45mm (0th item) to 0g if it is nan
         data.iloc[0, 1] = 0 if np.isnan(data.iloc[0,1]) else data.iloc[0,1]
         # replace the pan value
@@ -281,8 +335,8 @@ class ManualProcessor:
         try:
             assert((data.dtypes == np.float64).all())
         except AssertionError:
-            print(data)
-            print("Data is not all float64")
+            lwrite("Data is not all float64")
+            lwrite(data)
             #print(data.apply(pd.to_numeric))
             #print(data.apply(pd.to_numeric).dtypes)
             raise
@@ -292,13 +346,13 @@ class ManualProcessor:
 
     def _load_masses_xlsx(self):
         kwargs = {
-                'sheetname'  : 'Sheet1',
+                'sheet_name'  : 'Sheet1',
                 'header'     : [0,1],
                 'skiprows'   : 0,
-                'index_col'  : [0, 1, 2],
-                'parse_cols' : 'B:M',
+                #'index_col'  : [1, 2, 3],
+                #'usecols' : 'B:M',
                 'na_values'  : ['#DIV/0!', '#VALUE!'],
-                'skip_footer': 4,
+                'skipfooter': 4,
                 }
 
         self.logger.write("Removing old references")
@@ -314,18 +368,30 @@ class ManualProcessor:
             exp_code, source_str = masses_filename.split('-', 1)
 
             self.logger.write(f"Extracting {masses_filename}")
+            self.logger.increase_global_indent()
 
             # Read and prep raw data
             data = self.loader.load_xlsx(masses_filepath, kwargs, add_path=False)
+
+            # Because pandas 25.0 doesn't allow usecols or index_cols with a 
+            # multiindex, I'm going to have to do it myself.
+            column_names = list(data.columns.get_level_values(1))[1:4]
+            data.set_index(list(data.columns[1:4]), drop=True, inplace=True)
+            data.drop(data.columns[0], axis=1, inplace=True)
+            data.drop(data.columns[-2:], axis=1, inplace=True)
+            data.index.names = column_names
+
             #try:
             #    data = self.loader.load_xlsx(masses_filepath, kwargs, add_path=False)
             #except XLRDError:
-            #    kwargs['sheetname'] = 'All'
+            #    kwargs['sheet_name'] = 'All'
             #    data = self.loader.load_xlsx(masses_filepath, kwargs, add_path=False)
-            #    kwargs['sheetname'] = 'Sheet1'
+            #    kwargs['sheet_name'] = 'Sheet1'
             data = self._reformat_masses_data(data)
 
             self.all_masses_data[exp_code] = data
+
+            self.logger.decrease_global_indent()
 
     def _reformat_masses_data(self, data):
         # Clean up the data by providing experiment timestamps, sorting, and 
@@ -393,8 +459,11 @@ class ManualProcessor:
             if (data == 0).any().any():
                 # None of the values should be zero
                 # Just crash it for manual inspection
-                self.logger.write('Zero value found! Crashing!')
+                self.logger.write('Zero value found, aborting!')
                 print(data)
+                #
+                # Note: 4A r87 60min should have a sample 1 dry mass of 2.8548
+                #
                 assert(False)
             wet = data.loc[: , idx[sample, 'subset wet (kg)']]
             dry = data.loc[: , idx[sample, 'subset dry (kg)']]
@@ -434,11 +503,11 @@ class ManualProcessor:
 
     def _load_depth_xlsx(self):
         kwargs = {
-                'sheetname'  : 'Sheet1',
+                'sheet_name'  : 'Sheet1',
                 'header'     : 0,
                 'skiprows'   : 1,
                 'index_col'  : [0, 1, 2, 3],
-                'parse_cols' : range(1,18)
+                'usecols' : range(1,18)
                 }
 
         surf_data = {}
@@ -458,9 +527,9 @@ class ManualProcessor:
             try:
                 data = self.loader.load_xlsx(depth_filepath, kwargs, add_path=False)
             except XLRDError:
-                kwargs['sheetname'] = 'All'
+                kwargs['sheet_name'] = 'All'
                 data = self.loader.load_xlsx(depth_filepath, kwargs, add_path=False)
-                kwargs['sheetname'] = 'Sheet1'
+                kwargs['sheet_name'] = 'Sheet1'
             data = self._reformat_depth_data(data)
             data.sort_index(inplace=True)
 
@@ -511,17 +580,17 @@ class ManualProcessor:
     def update_omnipickle(self):
         # Add manual data to omnipickle
         ensure_dir_exists(self.pickle_destination)
-        #if self.all_depth_data:
-        #    self.omnimanager.add_depth_data(
-        #            self.pickle_destination, self.all_depth_data)
+        if self.all_depth_data:
+            self.omnimanager.add_depth_data(
+                    self.pickle_destination, self.all_depth_data)
 
-        #if self.all_masses_data:
-        #    self.omnimanager.add_masses_data(
-        #            self.pickle_destination, self.all_masses_data)
+        if self.all_masses_data:
+            self.omnimanager.add_masses_data(
+                    self.pickle_destination, self.all_masses_data)
 
-        #if self.all_sieve_data:
-        #    self.omnimanager.add_sieve_data(
-        #            self.pickle_destination, self.all_sieve_data)
+        if self.all_sieve_data:
+            self.omnimanager.add_sieve_data(
+                    self.pickle_destination, self.all_sieve_data)
 
         if self.all_feed_data:
             self.omnimanager.add_feed_data(

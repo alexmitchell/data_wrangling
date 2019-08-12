@@ -11,9 +11,8 @@ import pandas as pd
 import statsmodels.api as sm
 
 # From Helpyr
-from helpyr_misc import *
-from logger import Logger
-from data_loading import DataLoader
+from helpyr import helpyr_misc as hm
+from helpyr import logger
 
 from omnipickle_manager import OmnipickleManager
 import global_settings as settings
@@ -66,7 +65,7 @@ class UniversalGrapher:
         self.log_filepath = f"{settings.log_dir}/universal_grapher.txt"
 
         # Start up logger
-        self.logger = Logger(self.log_filepath, default_verbose=True)
+        self.logger = logger.Logger(self.log_filepath, default_verbose=True)
         self.logger.begin_output("Universal Grapher")
 
         # omnimanager
@@ -86,7 +85,7 @@ class UniversalGrapher:
                 'gsd'            : 'gsd',
                 'synthesis'      : 'synthesis',
                 }
-        ensure_dir_exists(self.figure_destination)
+        hm.ensure_dir_exists(self.figure_destination)
 
         self.ignore_steps = []
 
@@ -3016,7 +3015,7 @@ class UniversalGrapher:
     def plot_Qs_data(self):
         # Do stuff before plot loop
         x_name = 'exp_time_hrs'
-        #y_name = 'Bedload all'
+        y_name = 'Bedload all'
         #y_name = 'D84'
         y_name = 'D50'
         roll_window = 10 #minutes
@@ -3026,7 +3025,7 @@ class UniversalGrapher:
                 'y'      : y_name,
                 'kind'   : 'scatter',
                 #'legend' : True,
-                'legend' : False,
+                #'legend' : False,
                 'xlim' : (-0.25, 8.25),
                 #'ylim' : (0, settings.lighttable_bedload_cutoff), # for use without logy, for 'Bedload all'
                 #'logy' : True,
@@ -3057,7 +3056,15 @@ class UniversalGrapher:
         
         # Make one plot per experiment
         exp_codes = self.omnimanager.get_exp_codes()
+        ax_2B = None
+        lines_plotted = {}
         for exp_code, ax in zip(exp_codes, axs.flatten()):
+            if exp_code == '2B':
+                self.logger.write(f"Skipping experiment {exp_code}")
+                ax.set_axis_off()
+                ax_2B = ax
+                continue
+
             self.logger.write(f"Plotting experiment {exp_code}")
 
             plot_kwargs['ax'] = ax
@@ -3066,7 +3073,9 @@ class UniversalGrapher:
             accumulated_data = qs_data[exp_code]
 
             # Plot the data points
-            accumulated_data.plot(**plot_kwargs, marker='.', c='silver')
+            points_label = 'Bedload rates' if y_name == 'Bedload all' else f"Bedload {y_name}"
+            accumulated_data.plot(**plot_kwargs, marker='.', c='silver',
+                    label=points_label)
 
             # Generate and plot rolled data
             rolled_data = self.roll_data(accumulated_data,
@@ -3089,9 +3098,12 @@ class UniversalGrapher:
             #series_plot_kwargs['xlim'] = ax.get_xlim()
             #series_plot_kwargs['style'] = 'r'
 
-            rolling_75p.plot(label=r"75^{th} Percentile", style='c', **series_plot_kwargs)
-            rolling_25p.plot(label=r"25^{th} Percentile", style='c', **series_plot_kwargs)
-            rolling_median.plot(label='Median', style='b', **series_plot_kwargs)
+            rolling_75p.plot(label=r"75^{th} Percentile", 
+                    style='c', **series_plot_kwargs)
+            rolling_25p.plot(label=r"25^{th} Percentile",
+                    style='c', **series_plot_kwargs)
+            rolling_median.plot(label='Median',
+                    style='b', **series_plot_kwargs)
 
             #rolling_mean.plot(label='Mean', style='b', **series_plot_kwargs)
             #(rolling_mean + rolling_stddev).plot(label="Mean + Stddev",
@@ -3104,13 +3116,6 @@ class UniversalGrapher:
 
                 # Plot the sieve data Di if applicable
                 sieve_data = all_sieve_data[exp_code]
-                #test = sieve_data.loc[100]
-                #print(test)
-                #frac = test.cumsum() / test.sum()
-                #plt.figure()
-                #self.plot_distribution(frac)
-                #plt.show()
-                #assert(False)
                 sieve_data[y_name] = self.calc_Di(sieve_data,
                         target_Di=int(y_name[1:]))
                 sieve_plot_kwargs = {
@@ -3126,12 +3131,15 @@ class UniversalGrapher:
                         }
                 self.plot_group(sieve_data, sieve_plot_kwargs)
 
-            self.plot_2B_X(exp_code, ax)
+            if not self.for_paper:
+                self.plot_2B_X(exp_code, ax)
 
             ax.set_title(f"{experiment.code} {experiment.name}")
             ax.set_ylabel('')
             ax.set_xlabel('')
             self.generic_set_grid(ax, yticks_minor=True)
+
+            ax.get_legend().remove()
 
         if y_name == 'Bedload all':
             fig_kwargs = {
@@ -3147,6 +3155,9 @@ class UniversalGrapher:
                     'title'  : rf"Bedload {y_name} with standard deviation envelope",
                     #'legend_labels' : [r"Mean", r"Mean + Std Dev"],
                     }
+        if self.for_paper:
+            self.add_common_label(axs[0,0], ax_2B)
+            
         if not self.for_paper:
             plt.legend()
         self.format_generic_figure(fig, axs, plot_kwargs, fig_kwargs)
@@ -3155,6 +3166,20 @@ class UniversalGrapher:
         self.save_figure(figure_name)
         plt.show()
 
+    def add_common_label(self, source_ax, display_ax):
+        # Get the labels and line handles from one plot
+        handles, labels = source_ax.get_legend_handles_labels()
+
+        # Remove one of the quartiles and rename the other
+        r75_idx = labels.index(r"75^{th} Percentile")
+        handles.pop(r75_idx)
+        labels.pop(r75_idx)
+        r25_idx = labels.index(r"25^{th} Percentile")
+        labels[r25_idx] = rf"$25^{{th}}$ and $75^{{th}}$ Percentiles"
+
+        legend = display_ax.legend(handles, labels)
+
+        return legend
 
     def make_Di_ratio_plots(self):
         self.generic_make(f"Qs Di ratio",
@@ -4162,7 +4187,7 @@ if __name__ == "__main__":
     #grapher.make_gsd_plots(x_name='exp_time', y_name='D84')
     #!grapher.make_gsd_plots(x_name='sta_str',  y_name='D50')
     #!grapher.make_manual_Di_plots()
-    #grapher.make_Qs_plots()
+    grapher.make_Qs_plots()
     #grapher.make_Di_ratio_plots()
     #!grapher.make_experiment_plots()
     #!grapher.make_bedload_feed_plots()

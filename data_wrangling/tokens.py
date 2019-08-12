@@ -308,7 +308,6 @@ class PeriodData:
         step = self.step
         length = '8m' if period == 't60' else '2m'
 
-        
         # Remove any existing data
         #print(f"{exp_code} removing gsd")
         self._remove_datasets([f"gsd"])
