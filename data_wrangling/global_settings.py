@@ -41,6 +41,7 @@ feed_rates = {
 # General file settings
 root_dir = "/home/alex/feed-timing/data"
 figure_destination = pjoin(root_dir, "prelim-figures")
+export_destination = pjoin(root_dir, "exported_data")
 log_dir = "/home/alex/feed-timing/code/log-files"
 
 # omnipickle dirs

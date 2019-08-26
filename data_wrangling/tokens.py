@@ -814,6 +814,16 @@ class Experiment:
         else:
             data = period_data.Qs_data
 
+        if 'add' in kwargs:
+            for col in kwargs['add']:
+                if 'limb' == col:
+                    data[col] = period_data.limb
+                elif 'period_range' == col:
+                    data[col] = period_data.period_range
+                else:
+                    print(f"Unknown option {col}")
+                    raise NotImplementedError
+
         if 'add_feed' in kwargs:
             n = data.shape[0]
             data['feed'] = period_data.feed_rate # kg/hr

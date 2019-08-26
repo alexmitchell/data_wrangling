@@ -13,6 +13,7 @@ import statsmodels.api as sm
 # From Helpyr
 from helpyr import helpyr_misc as hm
 from helpyr import logger
+from helpyr import data_loading
 
 from omnipickle_manager import OmnipickleManager
 import global_settings as settings
@@ -86,6 +87,12 @@ class UniversalGrapher:
                 'synthesis'      : 'synthesis',
                 }
         hm.ensure_dir_exists(self.figure_destination)
+
+        self.export_destination = settings.export_destination
+        self.export_subdir = ''
+        hm.ensure_dir_exists(self.export_destination)
+        self.data_loader = data_loading.DataLoader(
+                self.export_destination, logger=self.logger)
 
         self.ignore_steps = []
 
@@ -228,6 +235,15 @@ class UniversalGrapher:
         filepath = ospath_join(self.figure_destination, self.figure_subdir, figure_name)
         self.logger.write(f"Saving figure to {filepath}")
         plt.savefig(filepath, orientation='landscape')
+
+    def export_data(self, data, filename):
+        filepath = ospath_join(
+                self.export_destination, 
+                self.export_subdir, 
+                filename)
+        self.logger.write(f"Exporting data to {filepath}")
+        self.data_loader.save_txt(data, filepath,
+                kwargs={'sep':',', 'index':True}, is_path=True)
 
     
     def plot_group(self, group, plot_kwargs):
@@ -758,6 +774,192 @@ class UniversalGrapher:
             text_formats = [rf'${d}L/s$' for d in [50, 62, 75, 87, 100]]
             text_formatter = ticker.FixedFormatter(text_formats)
             ax.xaxis.set_minor_formatter(text_formatter)
+
+
+    def process_and_export_data(self, mode='all_Qs_data'):
+        mode_dict = {
+                'all_Qs_data' : self._process_export_all_Qs_data,
+                'smoothed_Qs' : self._process_export_smoothed_Qs_data,
+                '5min_Qs' : self._process_export_5min_data,
+                }
+        mode_dict[mode]()
+        #reload_fu = self.omnimanager.reload_Qs_data
+        #reload_fu = self.omnimanager.reload_depth_data
+        #reload_fu = self.omnimanager.reload_gsd_data
+
+    def _process_export_all_Qs_data(self):
+        self.omnimanager.reload_Qs_data(
+                add = ['limb', 'period_range'],
+                )
+        all_data_dict = self.gather_Qs_data()
+
+        del all_data_dict['2B']
+        keys = sorted(all_data_dict.keys())
+
+        all_data = pd.concat(all_data_dict, names=['exp_code', 'period_time'],
+                keys=keys)
+
+        all_data.reset_index(inplace=True)
+        all_data.set_index([
+            'exp_code', 'limb', 'discharge', 'period_range', 'period_time'], 
+                inplace=True)
+
+        drop_cols = ['missing ratio', 'vel', 'sd vel', 'number vel',]
+        all_data.drop(columns=drop_cols, inplace=True)
+
+        filename = 'all_Qs_data.csv'
+        #print(all_data_dict['2A'].index)
+        #print(all_data_dict['2A'].columns)
+        #print(all_data)
+        #print(all_data.index)
+        #print(all_data.columns)
+        #print()
+        #print(all_data.loc[('3B', 'rising', 't00-t60', slice(None)), :])
+
+        self.export_data(all_data, filename)
+
+    def _process_export_smoothed_Qs_data(self):
+        self.omnimanager.reload_Qs_data(
+                add = ['limb', 'period_range'],
+                )
+        all_data_dict = self.gather_Qs_data()
+        rolled_data_dict = {}
+
+        del all_data_dict['2B']
+        keys = sorted(all_data_dict.keys())
+
+        #for key in keys:
+        #    exp_data = all_data_dict[key]
+
+        all_data = pd.concat(all_data_dict, names=['exp_code', 'period_time'],
+                keys=keys)
+        all_data.reset_index(inplace=True)
+        all_data.set_index([
+            'exp_code', 'limb', 'discharge', 'period_range', 'period_time', 
+            'timestamp', 'exp_time', 'exp_time_hrs'], 
+                inplace=True)
+
+        drop_cols = ['missing ratio', 'vel', 'sd vel', 'number vel',]
+        all_data.drop(columns=drop_cols, inplace=True)
+
+        grouped = all_data.groupby(level='exp_code', axis=0)
+        window = 5*60
+        rolled = grouped.rolling(
+                window=window, 
+                min_periods=1,
+                center=True,
+                )
+        sum_data = rolled.sum()
+        sum_data.drop(columns=[
+            'D10', 'D16', 'D25', 'D50', 'D75', 'D84', 'D90', 'D95', 'Dmax'
+            ], inplace=True)
+        """
+        # Bedload transport masses (g)
+        'Bedload all', 'Bedload 0.5', 'Bedload 0.71', 'Bedload 1',
+        'Bedload 1.4', 'Bedload 2', 'Bedload 2.8', 'Bedload 4',
+        'Bedload 5.6', 'Bedload 8', 'Bedload 11.2', 'Bedload 16',
+        'Bedload 22', 'Bedload 32', 'Bedload 45',
+        # Grain counts
+        'Count all', 'Count 0.5', 'Count 0.71', 'Count 1', 'Count 1.4',
+        'Count 2', 'Count 2.8', 'Count 4', 'Count 5.6', 'Count 8',
+        'Count 11.2', 'Count 16', 'Count 22', 'Count 32', 'Count 45',
+        # Statistics
+        'D10', 'D16', 'D25', 'D50', 'D75', 'D84', 'D90', 'D95', 'Dmax'
+        """
+
+        sum_filename = 'smoothed_5min_sums_Qs_data.csv'
+        self.export_data(sum_data, sum_filename)
+
+        mean_data = rolled.mean()
+        mean_filename = 'smoothed_5min_means_Qs_data.csv'
+        self.export_data(mean_data, mean_filename)
+
+    def _process_export_5min_data(self):
+        self.omnimanager.reload_Qs_data(
+                add = ['limb', 'period_range'],
+                )
+        all_data_dict = self.gather_Qs_data()
+        rolled_data_dict = {}
+
+        del all_data_dict['2B']
+        keys = sorted(all_data_dict.keys())
+
+        #for key in keys:
+        #    exp_data = all_data_dict[key]
+
+        # Prepare all the data
+        all_data = pd.concat(all_data_dict, names=['exp_code', 'period_time'],
+                keys=keys)
+        all_data.reset_index(inplace=True)
+        all_data.set_index([
+            'exp_code', 'limb', 'discharge', 'period_range', 'period_time', 
+            #'timestamp', 
+            'exp_time', 'exp_time_hrs'], 
+                inplace=True)
+        drop_cols = ['missing ratio', 'vel', 'sd vel', 'number vel',]
+        all_data.drop(columns=drop_cols, inplace=True)
+
+        # Group into periods
+        group_cols = ['exp_code', 'limb', 'discharge', 'period_range']
+        grouped = all_data.groupby(level=group_cols, axis=0)
+
+        def sort_subset(df):
+            # Sort by timestamp to get right limb order
+            # For some reason sort_remaining=False for sort_index() isn't 
+            # working
+            df = df.sort_values(by='timestamp', ascending=True)
+            df = df.drop(columns='timestamp')
+            df = df.drop(columns=[
+                'D10', 'D16', 'D25', 'D50', 'D75', 'D84', 'D90', 'D95', 'Dmax',
+                ])
+
+            # Sort the experiments by splitting into a dict, then concatenating
+            df_dict = {}
+            for name, group in df.groupby(axis='index', level='exp_code'):
+                df_dict[name] = group
+            df = pd.concat(df_dict, keys=keys)
+            df.index = df.index.droplevel(level=1)
+            df.index.rename('exp_code', level=0, inplace=True)
+
+            return df
+
+        # Get heads and tails of each period
+        window = 5*60
+        heads = grouped.head(n=window)
+        tails = grouped.tail(n=window)
+
+        # Calc sum of each head or tail group
+        head_groups = heads.groupby(level=group_cols, axis=0)
+        head_sums = head_groups.sum()
+        tail_groups = tails.groupby(level=group_cols, axis=0)
+        tail_sums = tail_groups.sum()
+
+        # Reformat the data to get the right order
+        head_sums = sort_subset(head_sums)
+        tail_sums = sort_subset(tail_sums)
+
+        """
+        # Bedload transport masses (g)
+        'Bedload all', 'Bedload 0.5', 'Bedload 0.71', 'Bedload 1',
+        'Bedload 1.4', 'Bedload 2', 'Bedload 2.8', 'Bedload 4',
+        'Bedload 5.6', 'Bedload 8', 'Bedload 11.2', 'Bedload 16',
+        'Bedload 22', 'Bedload 32', 'Bedload 45',
+        # Grain counts
+        'Count all', 'Count 0.5', 'Count 0.71', 'Count 1', 'Count 1.4',
+        'Count 2', 'Count 2.8', 'Count 4', 'Count 5.6', 'Count 8',
+        'Count 11.2', 'Count 16', 'Count 22', 'Count 32', 'Count 45',
+        # Statistics
+        'D10', 'D16', 'D25', 'D50', 'D75', 'D84', 'D90', 'D95', 'Dmax'
+        """
+
+        head_filename = 'head_5min_sums_Qs_data.csv'
+        self.export_data(head_sums, head_filename)
+
+        tail_filename = 'tail_5min_sums_Qs_data.csv'
+        self.export_data(tail_sums, tail_filename)
+
+        difference_filename = 'difference_5min_sums_Qs_data.csv'
+        self.export_data(head_sums - tail_sums, difference_filename)
 
 
     # Functions to plot only dem data
@@ -3015,9 +3217,9 @@ class UniversalGrapher:
     def plot_Qs_data(self):
         # Do stuff before plot loop
         x_name = 'exp_time_hrs'
-        y_name = 'Bedload all'
-        #y_name = 'D84'
+        #y_name = 'Bedload all'
         y_name = 'D50'
+        #y_name = 'D84'
         roll_window = 10 #minutes
 
         plot_kwargs = {
@@ -3087,10 +3289,10 @@ class UniversalGrapher:
             rolling_mean = rolled_data.mean()
             rolling_stddev = rolled_data.std()
 
-            def plot_stddev(mean, stddev, label, series_plot_kwargs):
-                #range = pd.concat([mean - stddev, mean +stddev])
-                range = mean + stddev
-                range.plot(label=label, **series_plot_kwargs)
+            #def plot_stddev(mean, stddev, label, series_plot_kwargs):
+            #    #range = pd.concat([mean - stddev, mean +stddev])
+            #    range = mean + stddev
+            #    range.plot(label=label, **series_plot_kwargs)
                 
             # Plot the rolls
             series_plot_kwargs = {k : plot_kwargs[k] for k in plot_kwargs
@@ -3148,6 +3350,8 @@ class UniversalGrapher:
                     'title'  : r"Light table bedload data with standard deviation envelope",
                     #'legend_labels' : [r"Mean", r"Mean + Std Dev"],
                     }
+            axs[0,0].set_ylim((-50, 400))
+
         elif y_name in ['D50', 'D84']:
             fig_kwargs = {
                     'xlabel' : r"Experiment time (hours)",
@@ -3155,6 +3359,8 @@ class UniversalGrapher:
                     'title'  : rf"Bedload {y_name} with standard deviation envelope",
                     #'legend_labels' : [r"Mean", r"Mean + Std Dev"],
                     }
+            ylim = (-3, 40)if y_name == 'D50' else (-5, 70)
+            axs[0,0].set_ylim(ylim)
         if self.for_paper:
             self.add_common_label(axs[0,0], ax_2B)
             
@@ -4023,11 +4229,12 @@ class UniversalGrapher:
         plt.show()
 
 
-    def load_Qs_data(self):
+    def load_Qs_data(self, accumulate_kwargs=None):
         #self.experiments = self.loader.load_pickle(self.exp_omnipickle)
-        accumulate_kwargs = {
-                'check_ignored_fu' : self._check_ignore_period,
-                }
+        if accumulate_kwargs is None:
+            accumulate_kwargs = {
+                    'check_ignored_fu' : self._check_ignore_period,
+                    }
         self.omnimanager.reload_Qs_data(kwargs=accumulate_kwargs)
 
     def gather_Qs_data(self, gather_kwargs={}):
@@ -4164,6 +4371,7 @@ class UniversalGrapher:
 if __name__ == "__main__":
     # Run the script
     grapher = UniversalGrapher()
+    grapher.process_and_export_data(mode='5min_Qs')
     #grapher.make_simple_feed_plots()
     #grapher.make_sieve_di_plots(Di=84)
     #grapher.make_simple_sieve_plots()
@@ -4187,7 +4395,7 @@ if __name__ == "__main__":
     #grapher.make_gsd_plots(x_name='exp_time', y_name='D84')
     #!grapher.make_gsd_plots(x_name='sta_str',  y_name='D50')
     #!grapher.make_manual_Di_plots()
-    grapher.make_Qs_plots()
+    #grapher.make_Qs_plots()
     #grapher.make_Di_ratio_plots()
     #!grapher.make_experiment_plots()
     #!grapher.make_bedload_feed_plots()
