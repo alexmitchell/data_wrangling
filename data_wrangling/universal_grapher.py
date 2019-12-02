@@ -237,10 +237,11 @@ class UniversalGrapher:
         plt.savefig(filepath, orientation='landscape')
 
     def export_data(self, data, filename):
-        filepath = ospath_join(
-                self.export_destination, 
-                self.export_subdir, 
-                filename)
+        dirpath = ospath_join( self.export_destination, self.export_subdir)
+        hm.ensure_dir_exists(dirpath)
+
+        filepath = ospath_join( dirpath, filename)
+
         self.logger.write(f"Exporting data to {filepath}")
         self.data_loader.save_txt(data, filepath,
                 kwargs={'sep':',', 'index':True}, is_path=True)
@@ -315,7 +316,14 @@ class UniversalGrapher:
 
         # Make one plot per experiment
         exp_codes = self.omnimanager.get_exp_codes()
+        ax_2B = None
         for exp_code, ax in zip(exp_codes, axs.flatten()):
+            if self.for_paper and exp_code == '2B':
+                self.logger.write(f"Skipping experiment {exp_code}")
+                ax.set_axis_off()
+                ax_2B = ax
+                continue
+
             self.logger.write(f"Plotting experiment {exp_code}")
 
             plot_kwargs['ax'] = ax
@@ -325,6 +333,9 @@ class UniversalGrapher:
             plot_fu(exp_code, data, plot_kwargs)
 
             self.plot_2B_X(exp_code, ax)
+
+        if self.for_paper:
+            self.add_common_label(axs[0,0], ax_2B, has_quartiles=False)
 
         post_plot_fu(fig, axs, plot_kwargs)
 
@@ -533,8 +544,11 @@ class UniversalGrapher:
         filename_y_col = y_name.replace(' ', '-').lower()
         logy_str = '_logy' if 'logy' in plot_kwargs and plot_kwargs['logy'] else ''
         plot_2m_str = '_2m' if plot_2m else ''
-        figure_name = f"pseudo_hysteresis{plot_2m_str}_{filename_y_col}" + \
-                      f"_roll-{roll_window}min{logy_str}.png"
+        figure_name = '_'.join([
+            f"pseudo_hysteresis{plot_2m_str}",
+            f"{filename_y_col}",
+            f"roll-{roll_window}min{logy_str}.png",
+            ])
 
         # Start plot loop
         self.generic_plot_experiments(
@@ -629,7 +643,7 @@ class UniversalGrapher:
             raise NotImplementedError
 
         exp_time_hrs = data[exp_time_hrs_name]
-        assert(exp_time_hrs.iloc[-1] <= 8.0) # Otherwise not peak_time invalid
+        #assert(exp_time_hrs.iloc[-1] <= 8.0) # Otherwise not peak_time invalid
         data['pseudo discharge'] = peak_time - np.fabs(exp_time_hrs - peak_time)
 
         # Split data into limbs
@@ -657,8 +671,11 @@ class UniversalGrapher:
         rising_color, falling_color = colors[0:2]
 
         # Not actually grouped, but can still use self.plot_group
+        plot_kwargs['label'] = 'Rising Limb'
         plot_kwargs['color'] = rising_color
         self.plot_group(rising, plot_kwargs)
+
+        plot_kwargs['label'] = 'Falling Limb'
         plot_kwargs['color'] = falling_color
         self.plot_group(falling, plot_kwargs)
         
@@ -754,6 +771,17 @@ class UniversalGrapher:
             fig_kwargs['ylabel'] = rf"$D_{{ {Di[1:]} }}$ (mm)"
             fig_kwargs['title'] = rf"Pseudo hysteresis of bed surface {Di}"
             fig_kwargs['legend_labels'].append(self.get_feed_Di_label(Di))
+
+            if y_name == 'bed-D50':
+                # Hacky hardcoded way to make sure armor ratio text fits on 
+                # graph
+                global_ymin, global_ymax = (7, 12.5) # min range
+                for ax in axs.flatten():
+                    ymin, ymax = ax.get_ylim()
+                    global_ymin = min(global_ymin, ymin)
+                    global_ymax = max(global_ymax, ymax)
+                    ax.set_ylim((global_ymin, global_ymax))
+
         else:
             raise NotImplementedError
         self.format_generic_figure(fig, axs, plot_kwargs, fig_kwargs)
@@ -774,192 +802,6 @@ class UniversalGrapher:
             text_formats = [rf'${d}L/s$' for d in [50, 62, 75, 87, 100]]
             text_formatter = ticker.FixedFormatter(text_formats)
             ax.xaxis.set_minor_formatter(text_formatter)
-
-
-    def process_and_export_data(self, mode='all_Qs_data'):
-        mode_dict = {
-                'all_Qs_data' : self._process_export_all_Qs_data,
-                'smoothed_Qs' : self._process_export_smoothed_Qs_data,
-                '5min_Qs' : self._process_export_5min_data,
-                }
-        mode_dict[mode]()
-        #reload_fu = self.omnimanager.reload_Qs_data
-        #reload_fu = self.omnimanager.reload_depth_data
-        #reload_fu = self.omnimanager.reload_gsd_data
-
-    def _process_export_all_Qs_data(self):
-        self.omnimanager.reload_Qs_data(
-                add = ['limb', 'period_range'],
-                )
-        all_data_dict = self.gather_Qs_data()
-
-        del all_data_dict['2B']
-        keys = sorted(all_data_dict.keys())
-
-        all_data = pd.concat(all_data_dict, names=['exp_code', 'period_time'],
-                keys=keys)
-
-        all_data.reset_index(inplace=True)
-        all_data.set_index([
-            'exp_code', 'limb', 'discharge', 'period_range', 'period_time'], 
-                inplace=True)
-
-        drop_cols = ['missing ratio', 'vel', 'sd vel', 'number vel',]
-        all_data.drop(columns=drop_cols, inplace=True)
-
-        filename = 'all_Qs_data.csv'
-        #print(all_data_dict['2A'].index)
-        #print(all_data_dict['2A'].columns)
-        #print(all_data)
-        #print(all_data.index)
-        #print(all_data.columns)
-        #print()
-        #print(all_data.loc[('3B', 'rising', 't00-t60', slice(None)), :])
-
-        self.export_data(all_data, filename)
-
-    def _process_export_smoothed_Qs_data(self):
-        self.omnimanager.reload_Qs_data(
-                add = ['limb', 'period_range'],
-                )
-        all_data_dict = self.gather_Qs_data()
-        rolled_data_dict = {}
-
-        del all_data_dict['2B']
-        keys = sorted(all_data_dict.keys())
-
-        #for key in keys:
-        #    exp_data = all_data_dict[key]
-
-        all_data = pd.concat(all_data_dict, names=['exp_code', 'period_time'],
-                keys=keys)
-        all_data.reset_index(inplace=True)
-        all_data.set_index([
-            'exp_code', 'limb', 'discharge', 'period_range', 'period_time', 
-            'timestamp', 'exp_time', 'exp_time_hrs'], 
-                inplace=True)
-
-        drop_cols = ['missing ratio', 'vel', 'sd vel', 'number vel',]
-        all_data.drop(columns=drop_cols, inplace=True)
-
-        grouped = all_data.groupby(level='exp_code', axis=0)
-        window = 5*60
-        rolled = grouped.rolling(
-                window=window, 
-                min_periods=1,
-                center=True,
-                )
-        sum_data = rolled.sum()
-        sum_data.drop(columns=[
-            'D10', 'D16', 'D25', 'D50', 'D75', 'D84', 'D90', 'D95', 'Dmax'
-            ], inplace=True)
-        """
-        # Bedload transport masses (g)
-        'Bedload all', 'Bedload 0.5', 'Bedload 0.71', 'Bedload 1',
-        'Bedload 1.4', 'Bedload 2', 'Bedload 2.8', 'Bedload 4',
-        'Bedload 5.6', 'Bedload 8', 'Bedload 11.2', 'Bedload 16',
-        'Bedload 22', 'Bedload 32', 'Bedload 45',
-        # Grain counts
-        'Count all', 'Count 0.5', 'Count 0.71', 'Count 1', 'Count 1.4',
-        'Count 2', 'Count 2.8', 'Count 4', 'Count 5.6', 'Count 8',
-        'Count 11.2', 'Count 16', 'Count 22', 'Count 32', 'Count 45',
-        # Statistics
-        'D10', 'D16', 'D25', 'D50', 'D75', 'D84', 'D90', 'D95', 'Dmax'
-        """
-
-        sum_filename = 'smoothed_5min_sums_Qs_data.csv'
-        self.export_data(sum_data, sum_filename)
-
-        mean_data = rolled.mean()
-        mean_filename = 'smoothed_5min_means_Qs_data.csv'
-        self.export_data(mean_data, mean_filename)
-
-    def _process_export_5min_data(self):
-        self.omnimanager.reload_Qs_data(
-                add = ['limb', 'period_range'],
-                )
-        all_data_dict = self.gather_Qs_data()
-        rolled_data_dict = {}
-
-        del all_data_dict['2B']
-        keys = sorted(all_data_dict.keys())
-
-        #for key in keys:
-        #    exp_data = all_data_dict[key]
-
-        # Prepare all the data
-        all_data = pd.concat(all_data_dict, names=['exp_code', 'period_time'],
-                keys=keys)
-        all_data.reset_index(inplace=True)
-        all_data.set_index([
-            'exp_code', 'limb', 'discharge', 'period_range', 'period_time', 
-            #'timestamp', 
-            'exp_time', 'exp_time_hrs'], 
-                inplace=True)
-        drop_cols = ['missing ratio', 'vel', 'sd vel', 'number vel',]
-        all_data.drop(columns=drop_cols, inplace=True)
-
-        # Group into periods
-        group_cols = ['exp_code', 'limb', 'discharge', 'period_range']
-        grouped = all_data.groupby(level=group_cols, axis=0)
-
-        def sort_subset(df):
-            # Sort by timestamp to get right limb order
-            # For some reason sort_remaining=False for sort_index() isn't 
-            # working
-            df = df.sort_values(by='timestamp', ascending=True)
-            df = df.drop(columns='timestamp')
-            df = df.drop(columns=[
-                'D10', 'D16', 'D25', 'D50', 'D75', 'D84', 'D90', 'D95', 'Dmax',
-                ])
-
-            # Sort the experiments by splitting into a dict, then concatenating
-            df_dict = {}
-            for name, group in df.groupby(axis='index', level='exp_code'):
-                df_dict[name] = group
-            df = pd.concat(df_dict, keys=keys)
-            df.index = df.index.droplevel(level=1)
-            df.index.rename('exp_code', level=0, inplace=True)
-
-            return df
-
-        # Get heads and tails of each period
-        window = 5*60
-        heads = grouped.head(n=window)
-        tails = grouped.tail(n=window)
-
-        # Calc sum of each head or tail group
-        head_groups = heads.groupby(level=group_cols, axis=0)
-        head_sums = head_groups.sum()
-        tail_groups = tails.groupby(level=group_cols, axis=0)
-        tail_sums = tail_groups.sum()
-
-        # Reformat the data to get the right order
-        head_sums = sort_subset(head_sums)
-        tail_sums = sort_subset(tail_sums)
-
-        """
-        # Bedload transport masses (g)
-        'Bedload all', 'Bedload 0.5', 'Bedload 0.71', 'Bedload 1',
-        'Bedload 1.4', 'Bedload 2', 'Bedload 2.8', 'Bedload 4',
-        'Bedload 5.6', 'Bedload 8', 'Bedload 11.2', 'Bedload 16',
-        'Bedload 22', 'Bedload 32', 'Bedload 45',
-        # Grain counts
-        'Count all', 'Count 0.5', 'Count 0.71', 'Count 1', 'Count 1.4',
-        'Count 2', 'Count 2.8', 'Count 4', 'Count 5.6', 'Count 8',
-        'Count 11.2', 'Count 16', 'Count 22', 'Count 32', 'Count 45',
-        # Statistics
-        'D10', 'D16', 'D25', 'D50', 'D75', 'D84', 'D90', 'D95', 'Dmax'
-        """
-
-        head_filename = 'head_5min_sums_Qs_data.csv'
-        self.export_data(head_sums, head_filename)
-
-        tail_filename = 'tail_5min_sums_Qs_data.csv'
-        self.export_data(tail_sums, tail_filename)
-
-        difference_filename = 'difference_5min_sums_Qs_data.csv'
-        self.export_data(head_sums - tail_sums, difference_filename)
 
 
     # Functions to plot only dem data
@@ -2582,25 +2424,29 @@ class UniversalGrapher:
         # Combines the separate frames into one dataframe per experiment
         depth_data = {}
         for exp_code, frames in self.depth_data_frames.items():
-            sort_index = kwargs['new_index'][0]
             combined_data = pd.concat(frames)
-            depth_data[exp_code] = combined_data.sort_index(level=sort_index)
+            if 'new_index' in kwargs:
+                sort_index = kwargs['new_index'][0]
+                depth_data[exp_code] = combined_data.sort_index(level=sort_index)
+            else:
+                depth_data[exp_code] = combined_data
         return depth_data
 
     def _gather_depth_data(self, period, kwargs):
         # Have periods add themselves to a precursor of the overall depth 
         # dataframe dict
         #cols = kwargs['columns']
-        new_index = kwargs['new_index']
+        new_index = kwargs['new_index'] if 'new_index' in kwargs else None
         exp_code = period.exp_code
 
         data = period.depth_data
         if data is not None:
             index_names = list(data.index.names)
-            drop_list = list(set(index_names) - set(new_index))
-            data.reset_index(inplace=True)
-            data.set_index(new_index, inplace=True)
-            data.drop(drop_list, axis=1, inplace=True)
+            if new_index is not None:
+                drop_list = list(set(index_names) - set(new_index))
+                data.reset_index(inplace=True)
+                data.set_index(new_index, inplace=True)
+                data.drop(drop_list, axis=1, inplace=True)
             if exp_code not in self.depth_data_frames:
                 self.depth_data_frames[exp_code] = []
             self.depth_data_frames[exp_code].append(data.loc[:, :])
@@ -2621,14 +2467,36 @@ class UniversalGrapher:
     def _gather_masses_data(self, period, kwargs):
         # Have periods add themselves to a precursor of the overall masses 
         # dataframe dict
-        cols = kwargs['columns']
+        cols = kwargs['columns'] if 'columns' in kwargs else 'all'
+        add_cols = kwargs['add_cols'] if 'add_cols' in kwargs else None
         exp_code = period.exp_code
 
         data = period.masses_data
         if data is not None:
             if exp_code not in self.masses_data_frames:
                 self.masses_data_frames[exp_code] = []
-            self.masses_data_frames[exp_code].append(data.loc[:, cols])
+
+            if add_cols is not None:
+                skipped = []
+                for col in add_cols:
+                    if col == 'limb' and 'limb' not in data.columns:
+                        data['limb'] = period.limb
+                    elif col == 'discharge' and 'discharge' not in data.columns:
+                        data['discharge'] = period.discharge_int
+                    elif col == 'period_range' and 'period_range' not in data.columns:
+                        data['period_range'] = period.period_range
+                    elif col == 'exp_time_hrs' and 'exp_time_hrs' not in data.columns:
+                        assert(data.index.name == 'exp_time')
+                        data['exp_time_hrs'] = data.index.values / 60
+                    else:
+                        skipped.append(col)
+                if len(skipped) > 0:
+                    self.logger.write(f"Skipping columns {skipped} for gathering masses data")
+
+            if cols == 'all':
+                self.masses_data_frames[exp_code].append(data)
+            else:
+                self.masses_data_frames[exp_code].append(data.loc[:, cols])
 
     def gather_sieve_data(self, kwargs):
         # Gather all the sieve data into a dict of dataframes separated by 
@@ -2651,11 +2519,30 @@ class UniversalGrapher:
         # Have periods add themselves to a precursor of the overall sieve 
         # dataframe dict
         exp_code = period.exp_code
+        add_cols = kwargs['add_cols'] if 'add_cols' in kwargs else None
 
         data = period.sieve_data
         if data is not None:
             if exp_code not in self.sieve_data_frames:
                 self.sieve_data_frames[exp_code] = []
+
+            if add_cols is not None:
+                skipped = []
+                for col in add_cols:
+                    if col == 'limb' and 'limb' not in data.columns:
+                        data['limb'] = period.limb
+                    elif col == 'discharge' and 'discharge' not in data.columns:
+                        data['discharge'] = period.discharge_int
+                    elif col == 'period_range' and 'period_range' not in data.columns:
+                        data['period_range'] = period.period_range
+                    elif col == 'exp_time_hrs' and 'exp_time_hrs' not in data.columns:
+                        assert(data.index.name == 'exp_time')
+                        data['exp_time_hrs'] = data.index.values / 60
+                    else:
+                        skipped.append(col)
+                if len(skipped) > 0:
+                    self.logger.write(f"Skipping columns {skipped} for gathering masses data")
+
             self.sieve_data_frames[exp_code].append(data.loc[:, ])
 
     def calc_Di(self, data, target_Di=50):
@@ -3101,15 +2988,46 @@ class UniversalGrapher:
         # dataframe dict
         cols = kwargs['columns'] if 'columns' in kwargs else None
         new_index = kwargs['new_index'] if 'new_index' in kwargs else None
+        add_cols = kwargs['add_cols'] if 'add_cols' in kwargs else None
+
         exp_code = period.exp_code
+        limb = period.limb
+        discharge = period.discharge_int
 
         data = period.gsd_data
         if data is not None:
+
+            if add_cols is not None:
+                skipped = []
+                for col in add_cols:
+                    if col == 'limb' and 'limb' not in data.columns:
+                        data['limb'] = period.limb
+                    elif col == 'discharge' and 'discharge' not in data.columns:
+                        data['discharge'] = period.discharge_int
+                    elif col == 'period_range' and 'period_range' not in data.columns:
+                        data['period_range'] = period.period_range
+                    elif col == 'exp_time_hrs' and 'exp_time_hrs' not in data.columns:
+                        if data.index.name == 'exp_time':
+                            data['exp_time_hrs'] = data.index.values / 60
+                        else:
+                            assert('exp_time' in data.columns)
+                            data['exp_time_hrs'] = data['exp_time'] / 60
+                    else:
+                        skipped.append(col)
+                if len(skipped) > 0:
+                    self.logger.write(f"Skipping columns {skipped} for gathering gsd data")
+
             if new_index is not None:
                 data.reset_index(inplace=True)
+                if 'limb' in new_index:
+                    data['limb'] = limb
+                if 'discharge' in new_index:
+                    data['discharge'] = discharge
                 data.set_index(new_index, inplace=True)
+
             if exp_code not in kwargs['gsd_frames']:
                 kwargs['gsd_frames'][exp_code] = []
+
             if cols is None:
                 kwargs['gsd_frames'][exp_code].append(data.loc[:, :])
             else:
@@ -3372,16 +3290,17 @@ class UniversalGrapher:
         self.save_figure(figure_name)
         plt.show()
 
-    def add_common_label(self, source_ax, display_ax):
+    def add_common_label(self, source_ax, display_ax, has_quartiles=True):
         # Get the labels and line handles from one plot
         handles, labels = source_ax.get_legend_handles_labels()
 
-        # Remove one of the quartiles and rename the other
-        r75_idx = labels.index(r"75^{th} Percentile")
-        handles.pop(r75_idx)
-        labels.pop(r75_idx)
-        r25_idx = labels.index(r"25^{th} Percentile")
-        labels[r25_idx] = rf"$25^{{th}}$ and $75^{{th}}$ Percentiles"
+        if has_quartiles:
+            # Remove one of the quartiles and rename the other
+            r75_idx = labels.index(r"75^{th} Percentile")
+            handles.pop(r75_idx)
+            labels.pop(r75_idx)
+            r25_idx = labels.index(r"25^{th} Percentile")
+            labels[r25_idx] = rf"$25^{{th}}$ and $75^{{th}}$ Percentiles"
 
         legend = display_ax.legend(handles, labels)
 
@@ -3974,19 +3893,21 @@ class UniversalGrapher:
         x_column = 'exp_time_hrs'
         cumsum_column = 'cumulative'
         massbal_column = 'mass_balance'
+        feed_column = 'feed'
 
         figure_name = f"cleaned_cumulative_mass_balance.png"
 
         plot_kwargs = {
                 'x'      : x_column,
-                'y'      : [cumsum_column, massbal_column],
+                'y'      : [feed_column, cumsum_column, massbal_column],
+                'label'  : ['Feed', 'Cumulative Sediment Yield', 'Mass Balance'],
                 #'y'      : [cumsum_column],
                 'kind'   : 'line',
                 'xlim'   : (0, 8),
                 #'ylim'   : (0.001, 5000),
                 #'ylim'   : (0, 200),
                 'legend' : False,
-                'color'  : ['r', 'g'],
+                'color'  : ['k', 'r', 'g'],
                 }
         kwargs = {'plot_kwargs'       : plot_kwargs,
                   }
@@ -4000,7 +3921,8 @@ class UniversalGrapher:
     def _plot_cumulative_mass_bal(self, exp_code, Qs_data, plot_kwargs):
         bedload_col = 'Bedload all'
         time_col = plot_kwargs['x']
-        cumsum_col = plot_kwargs['y'][0] # Not very safe...
+        plot_cols = plot_kwargs['y']
+        cumsum_col = 'cumulative' # hacky
 
         scale = 1/1000 # covert to kg
         accumulated_data = Qs_data[exp_code]
@@ -4046,6 +3968,7 @@ class UniversalGrapher:
         time_indices = data.index.to_series()
         feed_cumsum = time_indices.apply(calc_cumsum_feed)
         feed_cumsum.index = time_indices
+        data['feed'] = feed_cumsum
         mass_balance = feed_cumsum - data[cumsum_col]
         data['mass_balance'] = mass_balance
         #print(feed_cumsum.astype(np.int))
@@ -4367,11 +4290,561 @@ class UniversalGrapher:
         return period_data.step in self.ignore_steps
 
 
+    # Processing and text exporting
+    def process_and_export_data(self, mode='all_Qs_data'):
+        mode_dict = {
+                'all_Qs_data' : self._process_export_all_Qs_data,
+                'smoothed_Qs' : self._process_export_smoothed_Qs_data,
+                '5min_Qs' : self._process_export_5min_Qs_data,
+                '5min_suite' : self._process_export_5min_data,
+                'all_data_xlsx' : self._process_export_all_data_xlsx, 
+                }
+        mode_dict[mode]()
+        #reload_fu = self.omnimanager.reload_Qs_data
+        #reload_fu = self.omnimanager.reload_depth_data
+        #reload_fu = self.omnimanager.reload_gsd_data
+
+    def _process_export_all_data_xlsx(self):
+        # Export all data into excel files. Each type of data gets an excel 
+        # file with separate sheets for each experiment.
+        self.export_subdir = 'all_data'
+
+        ## Export lighttable data
+        #self.__export_all_Qs_xlsx()
+
+        ## Export depth data
+        self.__export_all_depths_xlsx()
+
+        ## Export surface gsd
+        #self.__export_all_surface_gsd_xlsx()
+        
+        ## Export trap sieve totals and gsd data
+        #self.__export_all_trap_total_xlsx()
+        #self.__export_all_trap_gsd_xlsx()
+
+    def __export_all_Qs_xlsx(self):
+        # Export Qs data
+        exp_codes = self.omnimanager.get_exp_codes()
+        self.omnimanager.reload_Qs_data(
+                add = ['limb', 'period_range'],
+                )
+
+        all_Qs_data_dict = self.gather_Qs_data()
+        for Qs_data in all_Qs_data_dict.values():
+            Qs_data.reset_index(inplace=True)
+            Qs_data.set_index(
+                    ['limb', 'discharge', 'period_range',
+                        'exp_time', 'exp_time_hrs'], 
+                    inplace=True)
+            Qs_data.drop(columns=['index'], inplace=True)
+
+        Qs_filename = 'all_lighttable_data'
+        self.export_xlsx(all_Qs_data_dict, Qs_filename, key_order=exp_codes)
+
+    def __export_all_depths_xlsx(self):
+        # Export depth data
+        exp_codes = self.omnimanager.get_exp_codes()
+        self.omnimanager.reload_depth_data()
+
+        all_depth_data_dict = self.gather_depth_data({}) 
+
+        for depth_data in all_depth_data_dict.values():
+            depth_data.reset_index(inplace=True)
+            depth_data.sort_values(
+                    by=['exp_time', 'location'], ascending=[True, False],
+                    inplace=True)
+            depth_data['exp_time_hrs'] = depth_data['exp_time'] / 60
+
+            depth_data.set_index(
+                    ['limb', 'discharge', 'period_time', 'location',
+                        'exp_time', 'exp_time_hrs'], 
+                    inplace=True)
+
+        depth_filename = 'all_depth_data'
+        self.export_xlsx(all_depth_data_dict, depth_filename, 
+                key_order=exp_codes)
+
+    def __export_all_trap_total_xlsx(self):
+        # Export trap mass data
+        exp_codes = self.omnimanager.get_exp_codes()
+        self.omnimanager.reload_masses_data()
+
+        all_masses_data_dict = self.gather_masses_data({
+            'add_cols' : ['limb', 'discharge', 'exp_time_hrs', 'period_range'],
+            }) 
+
+        for masses_data in all_masses_data_dict.values():
+            masses_data.reset_index(inplace=True)
+
+            masses_data.set_index(
+                    ['limb', 'discharge', 'period_range',
+                        'exp_time', 'exp_time_hrs'], 
+                    inplace=True)
+
+        masses_filename = 'all_trap_total_data'
+        self.export_xlsx(all_masses_data_dict, masses_filename, 
+                key_order=exp_codes)
+
+    def __export_all_surface_gsd_xlsx(self):
+        # Export trap mass data
+        exp_codes = self.omnimanager.get_exp_codes()
+        self.omnimanager.reload_gsd_data()
+
+        all_gsd_data_dict = self.gather_gsd_data({
+            'add_cols' : ['limb', 'discharge', 'exp_time_hrs'],
+            }) 
+
+        for gsd_data in all_gsd_data_dict.values():
+            gsd_data.reset_index(inplace=True)
+
+            gsd_data.sort_values(by=['exp_time', 'sta_str'], inplace=True)
+
+            gsd_data.set_index(
+                    ['limb', 'discharge', 'period',
+                        'exp_time', 'exp_time_hrs',
+                        'scan_length', 'sta_str',
+                        ], 
+                    inplace=True)
+            gsd_data.drop(columns=['exp_code', 'step', 'scan_name'], 
+                    inplace=True)
+
+        gsd_filename = 'all_surface_gsd_data'
+        self.export_xlsx(all_gsd_data_dict, gsd_filename, 
+                key_order=exp_codes)
+
+    def __export_all_trap_gsd_xlsx(self):
+        # Export trap mass data
+        exp_codes = self.omnimanager.get_exp_codes()
+        self.omnimanager.reload_sieve_data()
+
+        all_gsd_data_dict = self.gather_sieve_data({
+            'add_cols' : ['limb', 'discharge', 'exp_time_hrs', 'period_range'],
+            })
+
+        for gsd_data in all_gsd_data_dict.values():
+            gsd_data.reset_index(inplace=True)
+            gsd_data.sort_values(by='exp_time', inplace=True)
+
+            gsd_data.set_index(
+                    ['limb', 'discharge', 'period_range',
+                        'exp_time', 'exp_time_hrs',
+                        ], 
+                    inplace=True)
+
+        gsd_filename = 'all_trap_gsd_data'
+        self.export_xlsx(all_gsd_data_dict, gsd_filename, 
+                key_order=exp_codes)
+
+
+    def export_xlsx(self, data_dict, filename, key_order=None, xlsx_kwargs={}):
+        export_dir = ospath_join(self.export_destination, self.export_subdir)
+        hm.ensure_dir_exists(export_dir)
+
+        filepath = ospath_join(export_dir, f"{filename}.xlsx")
+        self.logger.write(f"Exporting data to {filepath}")
+        
+        self.data_loader.save_xlsx(
+                data_dict, filepath, 
+                key_order = key_order,
+                add_path = False,
+                )
+
+    def _process_export_all_Qs_data(self):
+        self.omnimanager.reload_Qs_data(
+                add = ['limb', 'period_range'],
+                )
+        all_data_dict = self.gather_Qs_data()
+
+        del all_data_dict['2B']
+        keys = sorted(all_data_dict.keys())
+
+        all_data = pd.concat(all_data_dict, names=['exp_code', 'period_time'],
+                keys=keys)
+
+        all_data.reset_index(inplace=True)
+        all_data.set_index([
+            'exp_code', 'limb', 'discharge', 'period_range', 'period_time'], 
+                inplace=True)
+
+        drop_cols = ['missing ratio', 'vel', 'sd vel', 'number vel',]
+        all_data.drop(columns=drop_cols, inplace=True)
+
+        filename = 'all_Qs_data.csv'
+        #print(all_data_dict['2A'].index)
+        #print(all_data_dict['2A'].columns)
+        #print(all_data)
+        #print(all_data.index)
+        #print(all_data.columns)
+        #print()
+        #print(all_data.loc[('3B', 'rising', 't00-t60', slice(None)), :])
+
+        self.export_data(all_data, filename)
+
+    def _process_export_smoothed_Qs_data(self):
+        self.omnimanager.reload_Qs_data(
+                add = ['limb', 'period_range'],
+                )
+        all_data_dict = self.gather_Qs_data()
+        rolled_data_dict = {}
+
+        del all_data_dict['2B']
+        keys = sorted(all_data_dict.keys())
+
+        #for key in keys:
+        #    exp_data = all_data_dict[key]
+
+        all_data = pd.concat(all_data_dict, names=['exp_code', 'period_time'],
+                keys=keys)
+        all_data.reset_index(inplace=True)
+        all_data.set_index([
+            'exp_code', 'limb', 'discharge', 'period_range', 'period_time', 
+            'timestamp', 'exp_time', 'exp_time_hrs'], 
+                inplace=True)
+
+        drop_cols = ['missing ratio', 'vel', 'sd vel', 'number vel',]
+        all_data.drop(columns=drop_cols, inplace=True)
+
+        grouped = all_data.groupby(level='exp_code', axis=0)
+        window = 5*60
+        rolled = grouped.rolling(
+                window=window, 
+                min_periods=1,
+                center=True,
+                )
+        sum_data = rolled.sum()
+        sum_data.drop(columns=[
+            'D10', 'D16', 'D25', 'D50', 'D75', 'D84', 'D90', 'D95', 'Dmax'
+            ], inplace=True)
+        """
+        # Bedload transport masses (g)
+        'Bedload all', 'Bedload 0.5', 'Bedload 0.71', 'Bedload 1',
+        'Bedload 1.4', 'Bedload 2', 'Bedload 2.8', 'Bedload 4',
+        'Bedload 5.6', 'Bedload 8', 'Bedload 11.2', 'Bedload 16',
+        'Bedload 22', 'Bedload 32', 'Bedload 45',
+        # Grain counts
+        'Count all', 'Count 0.5', 'Count 0.71', 'Count 1', 'Count 1.4',
+        'Count 2', 'Count 2.8', 'Count 4', 'Count 5.6', 'Count 8',
+        'Count 11.2', 'Count 16', 'Count 22', 'Count 32', 'Count 45',
+        # Statistics
+        'D10', 'D16', 'D25', 'D50', 'D75', 'D84', 'D90', 'D95', 'Dmax'
+        """
+
+        sum_filename = 'smoothed_5min_sums_Qs_data.csv'
+        self.export_data(sum_data, sum_filename)
+
+        mean_data = rolled.mean()
+        mean_filename = 'smoothed_5min_means_Qs_data.csv'
+        self.export_data(mean_data, mean_filename)
+
+    def _process_export_5min_Qs_data(self):
+        self.omnimanager.reload_Qs_data(
+                add = ['limb', 'period_range'],
+                )
+        all_data_dict = self.gather_Qs_data()
+        rolled_data_dict = {}
+
+        del all_data_dict['2B']
+        keys = sorted(all_data_dict.keys())
+
+        #for key in keys:
+        #    exp_data = all_data_dict[key]
+
+        # Prepare all the data
+        all_data = pd.concat(all_data_dict, names=['exp_code', 'period_time'],
+                keys=keys)
+        all_data.reset_index(inplace=True)
+        all_data.set_index([
+            'exp_code', 'limb', 'discharge', 'period_range', 'period_time', 
+            #'timestamp', 
+            'exp_time', 'exp_time_hrs'], 
+                inplace=True)
+        drop_cols = ['missing ratio', 'vel', 'sd vel', 'number vel',]
+        all_data.drop(columns=drop_cols, inplace=True)
+
+        # Group into periods
+        group_cols = ['exp_code', 'limb', 'discharge', 'period_range']
+        grouped = all_data.groupby(level=group_cols, axis=0)
+
+        def sort_subset(df):
+            # Sort by timestamp to get right limb order
+            # For some reason sort_remaining=False for sort_index() isn't 
+            # working
+            df = df.sort_values(by='timestamp', ascending=True)
+            df = df.drop(columns='timestamp')
+            df = df.drop(columns=[
+                'D10', 'D16', 'D25', 'D50', 'D75', 'D84', 'D90', 'D95', 'Dmax',
+                ])
+
+            # Sort the experiments by splitting into a dict, then concatenating
+            df_dict = {}
+            for name, group in df.groupby(axis='index', level='exp_code'):
+                df_dict[name] = group
+            df = pd.concat(df_dict, keys=keys)
+            df.index = df.index.droplevel(level=1)
+            df.index.rename('exp_code', level=0, inplace=True)
+
+            return df
+
+        # Get heads and tails of each period
+        window = 5*60
+        heads = grouped.head(n=window)
+        tails = grouped.tail(n=window)
+
+        # Calc sum of each head or tail group
+        head_groups = heads.groupby(level=group_cols, axis=0)
+        head_sums = head_groups.sum()
+        tail_groups = tails.groupby(level=group_cols, axis=0)
+        tail_sums = tail_groups.sum()
+
+        # Reformat the data to get the right order
+        head_sums = sort_subset(head_sums)
+        tail_sums = sort_subset(tail_sums)
+
+        """
+        # Bedload transport masses (g)
+        'Bedload all', 'Bedload 0.5', 'Bedload 0.71', 'Bedload 1',
+        'Bedload 1.4', 'Bedload 2', 'Bedload 2.8', 'Bedload 4',
+        'Bedload 5.6', 'Bedload 8', 'Bedload 11.2', 'Bedload 16',
+        'Bedload 22', 'Bedload 32', 'Bedload 45',
+        # Grain counts
+        'Count all', 'Count 0.5', 'Count 0.71', 'Count 1', 'Count 1.4',
+        'Count 2', 'Count 2.8', 'Count 4', 'Count 5.6', 'Count 8',
+        'Count 11.2', 'Count 16', 'Count 22', 'Count 32', 'Count 45',
+        # Statistics
+        'D10', 'D16', 'D25', 'D50', 'D75', 'D84', 'D90', 'D95', 'Dmax'
+        """
+
+        head_filename = 'head_5min_sums_Qs_data.csv'
+        self.export_data(head_sums, head_filename)
+
+        tail_filename = 'tail_5min_sums_Qs_data.csv'
+        self.export_data(tail_sums, tail_filename)
+
+        difference_filename = 'difference_5min_sums_Qs_data.csv'
+        self.export_data(head_sums - tail_sums, difference_filename)
+
+    def _process_export_5min_data(self):
+        ## Load data
+        # Load depth data
+        self.omnimanager.reload_depth_data()
+        depth_data_dict = self.gather_depth_data({
+            #'new_index' : ['limb', 'discharge', 'period_],
+            })
+
+        # Load bed gsd data
+        self.omnimanager.reload_gsd_data()
+        gsd_data_dict = self.gather_gsd_data({
+            #'columns'   : [y_name[-3:]],
+            'new_index' : ['limb', 'discharge', 'sta_str'],
+            })
+
+        # Load Qs data
+        self.omnimanager.reload_Qs_data(
+                add = ['limb', 'period_range'],
+                )
+        Qs_data_dict = self.gather_Qs_data()
+
+        ## Remove experiments
+        rolled_data_dict = {}
+        remove_keys = ['2B', '1A', '3A', '4A', '5A']
+        for key in remove_keys:
+            del Qs_data_dict[key]
+            del depth_data_dict[key]
+        keys = sorted(Qs_data_dict.keys())
+
+        Qs_head, Qs_tail = self.__process_Qs_5min(Qs_data_dict, keys)
+        geom_head, geom_tail = self.__process_depth_5min(depth_data_dict, keys)
+        gsd_tail = self.__process_gsd_5min(gsd_data_dict, keys)
+
+        ## Combine depth and Qs data
+        head_data = pd.concat([Qs_head, geom_head], axis=1)
+        tail_data = pd.concat([Qs_tail, gsd_tail, geom_tail], axis=1)
+
+        # Hacky way to get the column order
+        column_order = tail_data.columns.values
+        assert(np.all(np.in1d(head_data.columns.values, column_order)))
+
+        # Combine head and tail data into one dataframe
+        combined_data = pd.concat(
+                {'first_5min' : head_data, 'last_5min' : tail_data},
+                axis='columns', names=['time_set', 'variable'],
+                )
+
+        # Sort index
+        combined_data.sort_values(by=('first_5min', 'order_key'), inplace=True)
+
+        # Reorder and sort columns
+        print(column_order)
+        print(combined_data)
+
+        combined_data = combined_data.reorder_levels(
+                ['variable', 'time_set'],
+                axis=1)
+        combined_data.sort_index(axis=1, inplace=True)
+        combined_data = combined_data.reindex(
+                columns=column_order, level='variable')
+
+        combined_data.drop(columns='order_key', inplace=True)
+
+        print(combined_data)
+
+        filename = '5min_data.csv'
+        self.export_data(combined_data, filename)
+        
+    def __process_Qs_5min(self, Qs_data_dict, keys):
+        ## Combine the Qs dict dataframes and set the index
+        Qs_data = pd.concat(Qs_data_dict, names=['exp_code', 'period_time'],
+                keys=keys)
+        Qs_data.reset_index(inplace=True)
+        Qs_data.set_index([
+            'exp_code', 'limb', 'discharge', 'period_range', 'period_time', 
+            'timestamp', 
+            'exp_time', 'exp_time_hrs'], 
+                inplace=True)
+
+        # Drop some columns
+        drop_cols = ['missing ratio', 'vel', 'sd vel', 'number vel',
+                #'Bedload all', 
+                #'Bedload 0.5', 'Bedload 0.71', 'Bedload 1',
+                #'Bedload 1.4', 'Bedload 2', 'Bedload 2.8', 'Bedload 4',
+                #'Bedload 5.6', 'Bedload 8', 'Bedload 11.2', 'Bedload 16',
+                #'Bedload 22', 'Bedload 32', 'Bedload 45',
+                ## Grain counts
+                'Count all', 
+                'Count 0.5', 'Count 0.71', 'Count 1', 'Count 1.4',
+                'Count 2', 'Count 2.8', 'Count 4', 'Count 5.6', 'Count 8',
+                'Count 11.2', 'Count 16', 'Count 22', 'Count 32', 'Count 45',
+                # Statistics
+                'D10', 'D16', 'D25', 'D75', 'D90', 'D95', 'Dmax',
+                'D50', 'D84', 
+                ]
+        Qs_data.drop(columns=drop_cols, inplace=True)
+        
+        # Rename gsd columns to floats
+        def rename(name):
+            if name == 'Bedload all':
+                return 'bedload_total'
+            elif 'Bedload ' in name:
+                return np.float(name.split()[1])
+            elif name == 'Count all':
+                return 'count_total'
+            elif 'Count ' in name:
+                return np.float(name.split()[1])
+            else:
+                return name
+        Qs_data.columns = [rename(s) for s in Qs_data.columns.values]
+
+        # Create a column to track the order to allow for easy recovery of the 
+        # original order
+        order_key_np = np.arange(Qs_data.shape[0])
+        Qs_data.insert(0, 'order_key', order_key_np)
+
+        # Group into steps
+        group_cols = ['exp_code', 'limb', 'discharge']
+        Qs_grouped = Qs_data.groupby(level=group_cols, axis=0)
+
+        # Get heads and tails of each step group (first and last 5 minutes)
+        window = 5*60
+        Qs_heads = Qs_grouped.head(n=window)
+        Qs_tails = Qs_grouped.tail(n=window)
+
+        Qs_combined = {}
+        for name, subset in ('head', Qs_heads), ('tail', Qs_tails):
+            # Calc sum of each head or tail group
+            subset_groups = subset.groupby(level=group_cols, axis=0)
+            sum = subset_groups.sum()
+
+            # Split bedload total from bedload distributions
+            series_list = [
+                    sum.pop('order_key'),
+                    sum.pop('bedload_total'),
+                    ]
+
+            sum.columns = sum.columns.astype(np.float)
+            # Calculate Di values
+            for i in [50, 84]:
+                Di = self.calc_Di(sum, target_Di=i)
+                Di.name = f"bedload_{Di.name}"
+                series_list.append(Di)
+
+            # Merge Di series
+            Qs_combined[name] = pd.concat(series_list, axis=1)
+
+        return Qs_combined['head'], Qs_combined['tail']
+
+    def __process_depth_5min(self, depth_data_dict, keys):
+        ## Prepare depth and slope
+        # Merge depth data dict
+        depth_data_all = pd.concat(depth_data_dict, names=['exp_code'],
+                keys=keys)
+        depth_data_all /= 100 # convert to m
+        depth_data_all.drop(columns='exp_time', inplace=True)
+        depth_data = depth_data_all.xs('depth', level='location')
+        surface_data = depth_data_all.xs('surface', level='location')
+
+        # Calc mean depth and extract 10min and 50min times
+        depth_mean = depth_data.mean(axis=1)
+        depth_mean.name = 'depth_mean'
+
+        # Calc water surface slope
+        ols_out, flume_elevations = self._calc_retrended_slope(
+                surface_data, flume_elevations=None, intercept=None)
+        slope = ols_out['slope']
+        #ols_out.drop(columns=['r-sqr', 'intercept'], inplace=True)
+
+        # Calc shear
+        rho_w = 1000 # kg/m**3
+        g = 9.81 # m/s**2
+        shear = rho_w * g * depth_mean * slope
+        shear.name = "shear"
+
+        channel_geom = pd.concat([depth_mean, slope, shear], axis=1)
+
+        geom_head = channel_geom.xs(10, level='period_time')
+        geom_tail = channel_geom.xs(50, level='period_time')
+
+        return geom_head, geom_tail
+
+    def __process_gsd_5min(self, gsd_data_dict, keys):
+        ## Prepare bed surface gsd
+        # Merge depth data dict
+        gsd_all = pd.concat(gsd_data_dict, names=['exp_code'],
+                keys=keys)
+        gsd_drop_cols = ['exp_code', 'step', 'period', 'scan_length', 
+                'Sigmag', 'Dg', 'La', 'D90', 'D84', 'D50', 'D16', 'D10',
+                'Fsx', 'exp_time', 'scan_name']
+        gsd_all.drop(columns=gsd_drop_cols, inplace=True)
+
+        # Split into steps
+        group_cols = ['exp_code', 'limb', 'discharge']
+        gsd_groups = gsd_all.groupby(level=group_cols, axis=0)
+        gsd_sum = gsd_groups.sum(axis=1)
+
+        # Add all the gsds for each step
+        float_gsd_sums = gsd_sum.astype(np.float)
+        float_gsd_sums.columns = float_gsd_sums.columns.astype(np.float)
+
+        # Calculate Di series
+        Di_list = []
+        for i in [50, 84]:
+            Di = self.calc_Di(float_gsd_sums, target_Di=i)
+            Di.name = f"bed_{Di.name}"
+            Di_list.append(Di)
+
+        # Merge Di series
+        Di_combined = pd.concat(Di_list, axis=1)
+
+        return Di_combined
+
+
 
 if __name__ == "__main__":
     # Run the script
     grapher = UniversalGrapher()
-    grapher.process_and_export_data(mode='5min_Qs')
+
+    #grapher.process_and_export_data(mode='5min_suite')
+    grapher.process_and_export_data(mode='all_data_xlsx')
+
     #grapher.make_simple_feed_plots()
     #grapher.make_sieve_di_plots(Di=84)
     #grapher.make_simple_sieve_plots()
@@ -4399,8 +4872,11 @@ if __name__ == "__main__":
     #grapher.make_Di_ratio_plots()
     #!grapher.make_experiment_plots()
     #!grapher.make_bedload_feed_plots()
-    #grapher.make_pseudo_hysteresis_plots(y_name='bed-D50', plot_2m=True)
-    #grapher.make_pseudo_hysteresis_plots(y_name='depth', plot_2m=False)
+    # 'bed-D50', 'bed-D84'
+    #grapher.make_pseudo_hysteresis_plots(y_name='bed-D84', plot_2m=True)
+    # 'depth', 'slope'
+    #grapher.make_pseudo_hysteresis_plots(y_name='slope', plot_2m=True)
+    # 'Bedload all', 'D50', 'D84'
     #grapher.make_pseudo_hysteresis_plots(y_name='Bedload all', plot_2m=False)
     #!grapher.make_hysteresis_plots()
     #!grapher.make_cumulative_plots()

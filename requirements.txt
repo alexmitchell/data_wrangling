@@ -1,6 +1,10 @@
 statsmodels
 numpy
 matplotlib
-xlrd
 pandas
 scikit-learn
+
+# For xlsx i/o
+xlrd
+openpyxl
+xlsxwriter

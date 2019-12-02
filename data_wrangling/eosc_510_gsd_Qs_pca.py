@@ -65,7 +65,7 @@ gsd_column_names = [
 
 class EOSC510Project:
 
-    def __init__(self):
+    def __init__(self, debug_mode=False):
         
         # Start up logger
         self.log_filepath = f"{settings.log_dir}/eosc510_project.txt"
@@ -86,7 +86,7 @@ class EOSC510Project:
         self.figure_saver = figure_helpyr.FigureSaver(
                 figure_extension='png',
                 logger = self.logger,
-                debug_mode = True,
+                debug_mode = debug_mode,
                 figure_root_dir = settings.figure_destination,
                 figure_sub_dir = 'eosc510',
                 )
@@ -122,24 +122,65 @@ class EOSC510Project:
             bedload_all_pd = raw_pd_data['Bedload all']
             bedload_all = bedload_all_pd.values
             exp_time_hrs = raw_pd_data['exp_time_hrs'].values
+            
+            # Find prominence
+            # Measure of how different the target node is from the average of 
+            # the adjacent cells. I can't find a rolling window type that 
+            # excludes the center node (kinda like image processing kernels 
+            # can) so I can average only the adjacent nodes, hence the more 
+            # complicated prominence equation.
+            p_window = 7 # Note, this includes the center
+            p_tolerance = 250
+            self.logger.write(f"Note: Outliers are currently calculated as " +\
+                    f"any point +-{p_tolerance} g/s from the average of the " +\
+                    f"neighboring {p_window-1} nodes (prominence)")
+            p_roller = bedload_all_pd.rolling(
+                    p_window, min_periods=1, center=True)
+            p_sum = p_roller.sum()
+            prominence = \
+                    (1 + 1/(p_window-1)) * bedload_all_pd - \
+                    p_sum / (p_window - 1)
 
-            # Roll raw data
-            window = 400
-            tolerance = self.rolling_missing_tolerance
-            raw_roller = bedload_all_pd.rolling(window,
-                    min_periods=int(window * tolerance), center=True)
-            rrstd = raw_roller.std()
-            rrmean = raw_roller.mean()
+            # Identify outliers
+            very_pos = prominence > p_tolerance
+            very_neg = prominence < -p_tolerance
+            is_outlier = very_pos | very_neg
+            outliers_idx = np.where(is_outlier)[0]
 
-            # Find "outliers"
-            # Outlier if above both a threshold and a multiple of the std dev
-            std_scale = 3
-            threshold = 500
-            with np.errstate(invalid='ignore'):
-                above_threshold = bedload_all > threshold
-                above_std = bedload_all > (rrmean + rrstd * std_scale).values 
-            outliers_idx = np.where(
-                    np.logical_and(above_threshold, above_std))[0]
+            # Set outliers to NaN
+            #outliers = bedload_all_pd[is_outlier].copy()
+            #bedload_all_pd.loc[is_outlier] = np.NaN
+
+            # Some debugging plots
+            #plt.figure()
+            #plt.scatter(exp_time_hrs, bedload_all_pd, color='b')
+            #plt.scatter(exp_time_hrs[is_outlier], outliers, color='r')
+            #plt.title(f"bedload all {exp_code}")
+
+            #plt.figure()
+            #plt.scatter(exp_time_hrs, prominence)
+            #plt.hlines([-250, 250], 0, 8)
+            #plt.title(f"prominence {exp_code}")
+            #plt.show()
+            
+            # ### Old method of finding outliers ###
+            ## Roll raw data
+            #window = 400
+            #tolerance = self.rolling_missing_tolerance
+            #raw_roller = bedload_all_pd.rolling(window,
+            #        min_periods=int(window * tolerance), center=True)
+            #rrstd = raw_roller.std()
+            #rrmean = raw_roller.mean()
+
+            ## Find "outliers"
+            ## Outlier if above both a threshold and a multiple of the std dev
+            #std_scale = 3
+            #threshold = 500
+            #with np.errstate(invalid='ignore'):
+            #    above_threshold = bedload_all > threshold
+            #    above_std = bedload_all > (rrmean + rrstd * std_scale).values 
+            #outliers_idx = np.where(
+            #        np.logical_and(above_threshold, above_std))[0]
 
             # Remove outliers
             # Note this changes self.Qs_data
@@ -149,25 +190,9 @@ class EOSC510Project:
                     'Bedload 5.6', 'Bedload 8', 'Bedload 11.2', 'Bedload 16',
                     'Bedload 22', 'Bedload 32', 'Bedload 45',
                     ]
-        #    outliers_bedload = bedload_all_pd.iloc[outliers_idx].copy().values
-
+            #outliers_bedload = bedload_all_pd.iloc[outliers_idx].copy().values
             col_idx = np.where(np.in1d(raw_pd_data.columns, bedload_columns ))[0]
             raw_pd_data.iloc[outliers_idx, col_idx] = np.nan
-
-        #    # Reroll on clean data
-        #    bedload_all_pd = raw_pd_data['Bedload all']
-        #    clean_roller = bedload_all_pd.rolling(window,
-        #            min_periods=int(window * tolerance), center=True)
-        #    crstd = clean_roller.std()
-        #    crmean = clean_roller.mean()
-
-        #    self._plot_outliers(exp_code,
-        #            exp_time_hrs, raw_pd_data['Bedload all'],
-        #            exp_time_hrs[outliers_idx], outliers_bedload,
-        #            threshold, std_scale, rrmean, rrstd, crmean, crstd)
-        #plt.show()
-        #plt.close('all')
-        #assert(False)
 
     def _plot_outliers(self, exp_code, time, bedload, o_time, o_bedload, threshold, std_scale, rrmean, rrstd, crmean, crstd):
         plt.figure()
@@ -254,6 +279,7 @@ class EOSC510Project:
         extra_cols = self.prep_raw_data(raw_pd_data)
         exp_time_hrs = extra_cols['exp_time_hrs']
         grain_sizes = extra_cols['grain_sizes']
+        bedload_all = extra_cols['bedload_all']
 
         pca_output = self.do_pca(raw_pd_data)
         model = pca_output['model']
@@ -448,7 +474,8 @@ class EOSC510Project:
                     1, bedload_all, recon_bedload_all_1,
                     fig_name_parts=fig_name_parts_1)
 
-            plt.show()
+            #plt.show()
+
             plt.close('all')
 
         if save_output:
@@ -1166,16 +1193,16 @@ class EOSC510Project:
 
 if __name__ == "__main__":
     # Run the script
-    project = EOSC510Project()
-    #project.load_raw_data()
-    #project.analyze_pca_individually(make_plots=False, save_output=True)
-    #project.analyze_pca_all(make_plots=False, save_output=True)
+    project = EOSC510Project(debug_mode=False)
+    project.load_raw_data()
+    #project.analyze_pca_individually(make_plots=True, save_output=True)
+    project.analyze_pca_all(make_plots=True, save_output=True)
 
     #project.reload_pca_pickle('all')
     #project.analyze_clusters_all()
 
-    project.reload_pca_pickle('individual')
-    project.analyze_2pass_stability(
-            n_p1_clusters_list=[10, 30, 40, 50], 
-            n_p2_clusters_list=[2,3,5,7],
-            show_plots=True)
+    #project.reload_pca_pickle('individual')
+    #project.analyze_2pass_stability(
+    #        n_p1_clusters_list=[10, 30, 40, 50], 
+    #        n_p2_clusters_list=[2,3,5,7],
+    #        show_plots=True)

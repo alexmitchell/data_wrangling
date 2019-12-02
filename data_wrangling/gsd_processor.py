@@ -5,16 +5,13 @@ import numpy as np
 import pandas as pd
 from time import asctime
 
-from data_loading import DataLoader
-from logger import Logger
-from crawler import Crawler
-from helpyr_misc import nsplit
-from helpyr_misc import ensure_dir_exists
-from helpyr_misc import exclude_df_cols
-
 from omnipickle_manager import OmnipickleManager
-from crawler import Crawler
 import global_settings as settings
+
+from helpyr import data_loading
+from helpyr import logger
+#from helpyr import crawler
+from helpyr import helpyr_misc as hm
 
 # currently set to handed 2m gsd
 # Doing it the quick way....
@@ -29,11 +26,12 @@ class GSDProcessor:
         self.log_filepath = f"{settings.log_dir}/gsd_processor.txt"
         
         # Start up logger
-        self.logger = Logger(self.log_filepath, default_verbose=True)
+        self.logger = logger.Logger(self.log_filepath, default_verbose=True)
         self.logger.write(["Begin GSD Processor output", asctime()])
 
         # Start up loader
-        self.loader = DataLoader(self.pickle_destination, logger=self.logger)
+        self.loader = data_loading.DataLoader(
+                self.pickle_destination, logger=self.logger)
         
         # Reload omnimanager
         self.omnimanager = OmnipickleManager(self.logger)
@@ -64,7 +62,7 @@ class GSDProcessor:
     def find_gsd_txt_files(self):
         # Find all the GrainSize.txt files
         self.logger.write("")
-        #crawler = Crawler(logger=self.logger)
+        #crawler = crawler.Crawler(logger=self.logger)
         #crawler.set_root(self.root)
         #self.gsd_txt_filepaths = crawler.get_target_files(
         #        "??-*L-t??-8m_sta-*_GrainSize.txt", verbose_file_list=False)
@@ -74,6 +72,7 @@ class GSDProcessor:
         gsd_list_paths = [
                 '/home/alex/feed-timing/code/matlab/supporting-files/8m_final_gsd_list.txt',
                 '/home/alex/feed-timing/code/matlab/supporting-files/2m_final_gsd_list.txt',
+                #'/home/alex/feed-timing/data/cart/gsd_from_backups'
                 ]
                 
         for gsd_list_path in gsd_list_paths:
@@ -90,8 +89,12 @@ class GSDProcessor:
                 }
         run_data_frames = []
         for gsd_filepath in self.gsd_txt_filepaths:
+            if not os.path.isfile(gsd_filepath):
+                self.logger.write(f"Missing file {gsd_filepath}")
+                continue
+
             # Pull apart provided filepath to GrainSize.txt to get run info 
-            gsd_dir, gsd_name = nsplit(gsd_filepath, 1)
+            gsd_dir, gsd_name = hm.nsplit(gsd_filepath, 1)
             gsd_name = gsd_name.split('.', 1)[0]
             scan_name, sta_str, _ = gsd_name.split('_')
             exp_code, step, period, scan_length = scan_name.split('-')
@@ -149,7 +152,7 @@ class GSDProcessor:
 
     def update_omnipickle(self):
         # Add gsd data to omnipickle
-        ensure_dir_exists(settings.cart_pickles_dir)
+        hm.ensure_dir_exists(settings.cart_pickles_dir)
         self.omnimanager.add_gsd_data(settings.cart_pickles_dir, self.all_data)
 
 
