@@ -61,7 +61,10 @@ class UniversalGrapher:
     # Based on the Qs_grapher, but extended to graph other data as well.
 
     # Generic functions
-    def __init__(self):
+    def __init__(self, fig_debug=False):
+
+        self.fig_debug = fig_debug
+
         # File locations
         self.log_filepath = f"{settings.log_dir}/universal_grapher.txt"
 
@@ -85,6 +88,7 @@ class UniversalGrapher:
                 'feed_sieve'     : 'feed_sieve',
                 'gsd'            : 'gsd',
                 'synthesis'      : 'synthesis',
+                'mass_balance'   : 'mass_balance',
                 }
         hm.ensure_dir_exists(self.figure_destination)
 
@@ -97,6 +101,7 @@ class UniversalGrapher:
         self.ignore_steps = []
 
         self.for_paper = True
+        self.skip_2B = False
 
     # General use functions
     def generic_make(self, name, load_fu, plot_fu, load_fu_kwargs=None, plot_fu_kwargs=None, fig_subdir=''):
@@ -233,8 +238,11 @@ class UniversalGrapher:
 
     def save_figure(self, figure_name):
         filepath = ospath_join(self.figure_destination, self.figure_subdir, figure_name)
-        self.logger.write(f"Saving figure to {filepath}")
-        plt.savefig(filepath, orientation='landscape')
+        if self.fig_debug:
+            self.logger.write(f"DEBUG: NOT saving figure to {filepath}")
+        else:
+            self.logger.write(f"Saving figure to {filepath}")
+            plt.savefig(filepath, orientation='landscape')
 
     def export_data(self, data, filename):
         dirpath = ospath_join( self.export_destination, self.export_subdir)
@@ -316,13 +324,17 @@ class UniversalGrapher:
 
         # Make one plot per experiment
         exp_codes = self.omnimanager.get_exp_codes()
-        ax_2B = None
+        legend_ax = None
+        legend_exp_code = plot_kwargs.pop('legend_exp_code') \
+                if 'legend_exp_code' in plot_kwargs else '2B'
         for exp_code, ax in zip(exp_codes, axs.flatten()):
-            if self.for_paper and exp_code == '2B':
-                self.logger.write(f"Skipping experiment {exp_code}")
-                ax.set_axis_off()
-                ax_2B = ax
-                continue
+            if exp_code == legend_exp_code:
+                legend_ax = ax
+
+            if self.for_paper and exp_code == '2B' and self.skip_2B:
+                    self.logger.write(f">>Skipping<< experiment {exp_code}")
+                    ax.set_axis_off()
+                    continue
 
             self.logger.write(f"Plotting experiment {exp_code}")
 
@@ -332,10 +344,11 @@ class UniversalGrapher:
 
             plot_fu(exp_code, data, plot_kwargs)
 
-            self.plot_2B_X(exp_code, ax)
+            if not self.for_paper:
+                self.plot_2B_X(exp_code, ax)
 
         if self.for_paper:
-            self.add_common_label(axs[0,0], ax_2B, has_quartiles=False)
+            self.add_common_label(axs[0,0], legend_ax, has_quartiles=False)
 
         post_plot_fu(fig, axs, plot_kwargs)
 
@@ -459,7 +472,7 @@ class UniversalGrapher:
             #        lw=2, color='k', alpha=0.75)
             #line.set_clip_on(False)
             #ax.add_line(line)
-            ax.plot([0, 1], [i, abs(i-1)], transform=ax.transAxes,
+            ax.plot([0, 1], [i, 1-i], transform=ax.transAxes,
                     lw=2, color='k')
 
 
@@ -3113,7 +3126,7 @@ class UniversalGrapher:
         plt.show()
 
 
-    def make_Qs_plots(self):
+    def make_Qs_plots(self, y_name='Bedload all'):
         self.logger.write([f"Making Qs time plots..."])
 
         self.figure_subdir = self.figure_subdir_dict['lighttable']
@@ -3127,16 +3140,17 @@ class UniversalGrapher:
                 before_msg="Loading data", after_msg="Data Loaded!")
 
         indent_function(self.plot_Qs_data,
+                kwargs = {'y_name' : y_name},
                 before_msg=f"Plotting Qs data",
                 after_msg="Finished Plotting!")
 
         self.logger.end_output()
 
-    def plot_Qs_data(self):
+    def plot_Qs_data(self, y_name='Bedload all'):
         # Do stuff before plot loop
         x_name = 'exp_time_hrs'
         #y_name = 'Bedload all'
-        y_name = 'D50'
+        #y_name = 'D50'
         #y_name = 'D84'
         roll_window = 10 #minutes
 
@@ -3180,10 +3194,11 @@ class UniversalGrapher:
         lines_plotted = {}
         for exp_code, ax in zip(exp_codes, axs.flatten()):
             if exp_code == '2B':
-                self.logger.write(f"Skipping experiment {exp_code}")
-                ax.set_axis_off()
                 ax_2B = ax
-                continue
+                if self.skip_2B:
+                    self.logger.write(f">>Skipping<< experiment {exp_code}")
+                    ax.set_axis_off()
+                    continue
 
             self.logger.write(f"Plotting experiment {exp_code}")
 
@@ -3268,7 +3283,7 @@ class UniversalGrapher:
                     'title'  : r"Light table bedload data with standard deviation envelope",
                     #'legend_labels' : [r"Mean", r"Mean + Std Dev"],
                     }
-            axs[0,0].set_ylim((-50, 400))
+            #axs[0,0].set_ylim((-50, 400))
 
         elif y_name in ['D50', 'D84']:
             fig_kwargs = {
@@ -3291,6 +3306,9 @@ class UniversalGrapher:
         plt.show()
 
     def add_common_label(self, source_ax, display_ax, has_quartiles=True):
+        if display_ax is None:
+            return
+
         # Get the labels and line handles from one plot
         handles, labels = source_ax.get_legend_handles_labels()
 
@@ -3900,13 +3918,14 @@ class UniversalGrapher:
         plot_kwargs = {
                 'x'      : x_column,
                 'y'      : [feed_column, cumsum_column, massbal_column],
-                'label'  : ['Feed', 'Cumulative Sediment Yield', 'Mass Balance'],
+                'label'  : ['Cumulative Feed', 'Cumulative Sediment Yield', 'Mass Balance'],
                 #'y'      : [cumsum_column],
                 'kind'   : 'line',
                 'xlim'   : (0, 8),
                 #'ylim'   : (0.001, 5000),
                 #'ylim'   : (0, 200),
                 'legend' : False,
+                'legend_exp_code' : '1A',
                 'color'  : ['k', 'r', 'g'],
                 }
         kwargs = {'plot_kwargs'       : plot_kwargs,
@@ -4152,6 +4171,186 @@ class UniversalGrapher:
         plt.show()
 
 
+    def make_maria_2019_plot(self):
+        self.logger.write(["Making Maria 2019 plot..."])
+
+        self.figure_subdir = self.figure_subdir_dict['mass_balance']
+        self.ignore_steps = []#['rising-50L']
+
+        indent_function = self.logger.run_indented_function
+
+        indent_function(self.load_Qs_data,
+                before_msg="Loading light table data", 
+                after_msg="Light table data Loaded!")
+        indent_function(self.omnimanager.reload_feed_data,
+                before_msg="Loading feed data", after_msg="Feed data Loaded!")
+
+        indent_function(self.plot_maria_2019,
+                before_msg="Plotting mass balance by size class",
+                after_msg="Finished Plotting!")
+
+        self.logger.end_output()
+
+    def plot_maria_2019(self):
+        #sns.set_style('ticks')
+        x_column = 'exp_time_hrs'
+
+        figure_name = f"cleaned_cumulative_mass_balance.png"
+
+        plot_kwargs = {
+                'x'      : x_column,
+                'y'      : None, # defined at end of _plot_maria_2019
+                'label'  : None, # defined at end of _plot_maria_2019
+                #'y'      : [cumsum_column],
+                'kind'   : 'line',
+                'xlim'   : (0, 8),
+                'ylim'   : (-400, 200),
+                'legend' : False,
+                'legend_exp_code' : '1A',
+                #'color'  : ['k', 'r', 'g'],
+                }
+        kwargs = {'plot_kwargs'       : plot_kwargs,
+                  }
+
+        Qs_data = self.gather_Qs_data()
+        feed_data = self.get_feed_GSDs().sum(axis=1)
+        feed_frac_data = feed_data / feed_data.sum()
+
+        data_dict = {'Qs_data' : Qs_data,
+                'feed_frac_data' : feed_frac_data,
+                }
+
+        self.generic_plot_experiments(
+            self._plot_maria_2019, self._format_maria_2019, 
+            data_dict, plot_kwargs, figure_name, subplot_shape=(2,4))
+
+    def _plot_maria_2019(self, exp_code, data_dict, plot_kwargs):
+        #if exp_code != '2A':
+        #    print(f'Skipping {exp_code} for debugging')
+        #    return
+        feed_col = 'feed'
+        raw_data = data_dict['Qs_data'][exp_code]
+        feed_frac_data = data_dict['feed_frac_data']
+
+        # Drop uneccesary columns from Qs data
+        bedload_cols = [name for name in raw_data.columns if 'Bedload' in name]
+        time_cols = [name for name in raw_data.columns if name in 
+                ['exp_time_hrs', 'exp_time']]
+        drop_cols = [name for name in raw_data.columns if name not in 
+                bedload_cols + time_cols]
+        raw_data.drop(columns=drop_cols, inplace=True)
+        output_data = raw_data.loc[:, time_cols]
+
+        # Make feed rate column (g/sec)
+        hourly_feed_rate = settings.feed_rates[exp_code]
+        def calc_feed_rate(time_hrs):
+            # Calculate the g per sec feed rate
+            if time_hrs >= len(hourly_feed_rate):
+                return 0
+            lower_index = np.floor(time_hrs).astype(np.int)
+            rate = hourly_feed_rate[lower_index] / 3.600
+            return rate
+        raw_data[feed_col] = raw_data['exp_time_hrs'].apply(calc_feed_rate)
+
+        # Calculate cumsum and convert to kg
+        rate_cols = bedload_cols + [feed_col]
+        cumsum_data = raw_data[rate_cols].cumsum() / 1000
+
+        # Do consolidation and calculations by GS categories 
+        gs_categories = {
+                new_col_name: GSCategory(new_col_name, gs_sizes) \
+                        for (new_col_name, gs_sizes) in [
+                            ('total'   , []),
+                            ('lt_1mm'  , [ '0.5' ,  '0.71',  '1'   , ]),
+                            ('1_2mm'   , [ '1.4' ,  '2'   , ]),
+                            #('lt_2mm'  , [ '0.5' ,  '0.71',  '1'   ,
+                            #               '1.4' ,  '2'   , ]),
+                            ('2_4mm'   , [ '2.8' ,  '4'   , ]),
+                            ('4_8mm'   , [ '5.6' ,  '8'   , ]),
+                            #('2_8mm'   , [ '2.8' ,  '4'   ,
+                            #               '5.6' ,  '8'   , ]),
+                            ('8_16mm'  , ['11.2' , '16'   , ]),
+                            ('geq_16mm', ['22'   , '32'   , '45'   ]),
+                            ]
+                        }
+        gs_plot_order = ['total', 'lt_1mm', '1_2mm', '2_4mm', '4_8mm',
+                '8_16mm', 'geq_16mm']
+        #gs_plot_order = ['total', 'lt_2mm', '2_8mm', '8_16mm', 'geq_16mm']
+        gs_legend_names = []
+        for new_col in gs_plot_order:
+        #for (new_col, gs_category) in gs_categories.items():
+            gs_category = gs_categories[new_col]
+            #gs_plot_order.append(new_col)
+            legend_name = gs_category.legend_name
+            gs_legend_names.append(legend_name)
+            cat_bedload_cols = gs_category.bedload_cols
+            cat_sieve_cols = gs_category.sieve_cols
+
+            # Calculate bedload mass for this GS category
+            cat_bedload_mass = cumsum_data.loc[:, cat_bedload_cols].sum(axis=1)
+
+            # Must manually set nan rows to zero.
+            # For some reason sum is not doing it correctly
+            nan_row = cumsum_data.isna().any(axis=1)
+            cat_bedload_mass[nan_row] = np.nan
+
+            # Calculate fraction of feed in this GS class
+            cat_feed_frac = feed_frac_data[cat_sieve_cols].sum()
+            cat_feed_mass = cumsum_data.loc[:, feed_col] * cat_feed_frac
+
+            # Calculate mass balance for this GS category
+            cat_mass_balance = cat_feed_mass - cat_bedload_mass
+
+            # Add back into the cumsum dataframe
+            output_data[new_col] = cat_mass_balance
+
+        # Set index to exp_time
+        output_data.set_index('exp_time', drop=True, inplace=True)
+
+        ## Subsample data
+        #subsample_step = 60*5 # 5 min
+        #subsample_index = (output_data.index.values % subsample_step) == 0
+        #output_data = output_data.loc[subsample_index, :]
+
+        # Set index to exp_time_hrs
+        #output_data.set_index('exp_time_hrs', drop=True, inplace=True)
+
+        # Plot it!
+        plot_kwargs['y'] = gs_plot_order
+        plot_kwargs['label'] = gs_legend_names
+        #plot_kwargs['legend'] = True
+        self._generic_df_plot(output_data, plot_kwargs)
+
+        self.generic_set_grid(plot_kwargs['ax'], yticks_minor=True)
+
+    def _format_maria_2019(self, fig, axs, plot_kwargs):
+        # Format the figure after the plot loop
+        fig_kwargs = {
+                'xlabel'        : r"Experiment time (hours)",
+                'ylabel'        : r"Mass (kg)",
+                'title'         : r"Cumulative sum of bedload output and flume mass balance",
+                #'legend_labels' : [r"Shear from surface", r"Shear from bed"],
+                'legend_labels' : ["Cumulative\nbedload", "Flume\nmass balance"],
+                }
+        self.format_generic_figure(fig, axs, plot_kwargs, fig_kwargs)
+
+    def get_feed_GSDs(self):
+        feed_data_dict = {}
+        for exp_code in self.omnimanager.experiments.keys():
+            experiment = self.omnimanager.experiments[exp_code]
+
+            data = experiment.feed_data
+            if data is None:
+                continue
+            for sample in data.index:
+                feed_data_dict[(exp_code, sample)] = data.loc[sample, :].copy()
+        feed_data = pd.DataFrame.from_dict(feed_data_dict)
+
+        return feed_data
+
+
+    # General functions to be given to PeriodData instances (out of date tite?)
+
     def load_Qs_data(self, accumulate_kwargs=None):
         #self.experiments = self.loader.load_pickle(self.exp_omnipickle)
         if accumulate_kwargs is None:
@@ -4160,12 +4359,78 @@ class UniversalGrapher:
                     }
         self.omnimanager.reload_Qs_data(kwargs=accumulate_kwargs)
 
-    def gather_Qs_data(self, gather_kwargs={}):
+    def gather_Qs_data(self, gather_kwargs={}, return_outliers=False):
         Qs_data = {}
         for exp_code in self.omnimanager.experiments.keys():
             experiment = self.omnimanager.experiments[exp_code]
             Qs_data[exp_code] = experiment.accumulated_data
-        return Qs_data
+
+        Qs_data, outlier_meta_dict = self.clean_Qs_data(Qs_data)
+        if return_outliers:
+            return Qs_data, outlier_meta_dict
+        else:
+            return Qs_data
+
+    def clean_Qs_data(self, Qs_data):
+        self.logger.write_blankline()
+        p_window = 5 # Note, this includes the center
+        p_tolerance = 250 # g/s
+        self.logger.write(f"Cleaning Qs data")
+        self.logger.increase_global_indent()
+        self.logger.write(f"Note: Outliers are currently calculated as " +\
+                f"any point +-{p_tolerance} g/s from the average " +\
+                f"of the neighboring {p_window-1} nodes (prominence)")
+
+        outlier_meta = {}
+        outlier_meta['prominence_pd_dict'] = {}
+        outlier_meta['outliers_pd_dict'] = {}
+
+        for exp_code in Qs_data.keys():
+            self.logger.write(f"Cleaning {exp_code}")
+            raw_pd_data = Qs_data[exp_code]
+            bedload_all_pd = raw_pd_data['Bedload all']
+            exp_time_hrs = raw_pd_data['exp_time_hrs'].values
+            
+            # Find prominence
+            # Measure of how different the target node is from the average of 
+            # the adjacent cells. I can't find a rolling window type that 
+            # excludes the center node (kinda like image processing kernels 
+            # can) so I can average only the adjacent nodes, hence the more 
+            # complicated prominence equation.
+            p_roller = bedload_all_pd.rolling(
+                    p_window, min_periods=1, center=True)
+            p_sum = p_roller.sum()
+            prominence = \
+                    (1 + 1/(p_window-1)) * bedload_all_pd - \
+                    p_sum / (p_window - 1)
+            prominence.index = exp_time_hrs
+
+            # Identify outliers
+            very_pos = prominence > p_tolerance
+            very_neg = prominence < -p_tolerance
+            is_outlier = (very_pos | very_neg).values
+            outlier_idx = np.where(is_outlier)[0]
+
+            outliers = bedload_all_pd[is_outlier].copy()
+            outliers.index = exp_time_hrs[is_outlier]
+
+            # Save data and remove outliers
+            outlier_meta['is_outlier'] = is_outlier
+            outlier_meta['outlier_idx'] = outlier_idx
+            outlier_meta['prominence_pd_dict'][exp_code] = prominence.copy()
+            outlier_meta['outliers_pd_dict'][exp_code] = outliers
+
+            bedload_columns = [
+                    'Bedload all', 'Bedload 0.5', 'Bedload 0.71', 'Bedload 1',
+                    'Bedload 1.4', 'Bedload 2', 'Bedload 2.8', 'Bedload 4',
+                    'Bedload 5.6', 'Bedload 8', 'Bedload 11.2', 'Bedload 16',
+                    'Bedload 22', 'Bedload 32', 'Bedload 45',
+                    ]
+            col_idx = np.where(np.in1d(raw_pd_data.columns, bedload_columns))[0]
+            raw_pd_data.iloc[outlier_idx, col_idx] = np.nan
+
+        self.logger.decrease_global_indent()
+        return Qs_data, outlier_meta
 
 
     def make_yield_feed_plot(self):
@@ -4253,7 +4518,6 @@ class UniversalGrapher:
         plt.show()
 
 
-    # General functions to be given to PeriodData instances
     def _generate_hydrograph(self, period_data, kwargs={}):
         # Generate a hydrograph series for plotting later
         #
@@ -4310,17 +4574,17 @@ class UniversalGrapher:
         self.export_subdir = 'all_data'
 
         ## Export lighttable data
-        #self.__export_all_Qs_xlsx()
+        self.__export_all_Qs_xlsx()
 
         ## Export depth data
         self.__export_all_depths_xlsx()
 
         ## Export surface gsd
-        #self.__export_all_surface_gsd_xlsx()
+        self.__export_all_surface_gsd_xlsx()
         
         ## Export trap sieve totals and gsd data
-        #self.__export_all_trap_total_xlsx()
-        #self.__export_all_trap_gsd_xlsx()
+        self.__export_all_trap_total_xlsx()
+        self.__export_all_trap_gsd_xlsx()
 
     def __export_all_Qs_xlsx(self):
         # Export Qs data
@@ -4837,41 +5101,103 @@ class UniversalGrapher:
         return Di_combined
 
 
+class GSCategory:
+
+    def __init__(self, new_col_name, gs_cats, legend_name=None):
+        # new_col_name is a dataframe friendly version of the name
+        # gs_cats is a list of GS sizes for the light table (will 
+        # convert for sieve data)
+        # legend_name is a plot friendly version of the name
+        #
+        # For use with Maria 2019 plotting function
+        self.col_name = new_col_name
+
+        if legend_name is None:
+            # Do a series of replacements to convert column name into 
+            # legend name
+            name = new_col_name
+            name = name.replace('lt_', r'$<$')
+            name = name.replace('geq_', r'$\geq$')
+            name = name.replace('_', '-')
+            name = name.replace('mm', ' mm')
+            name = name.capitalize() # 'total' to 'Total'
+            self.legend_name =  name
+        else:
+            self.legend_name = legend_name
+        
+        self.bedload_cols = []
+        self.sieve_cols = []
+
+        if self.col_name == 'total':
+            self.bedload_cols = ['Bedload all']
+            self.sieve_cols = [0.50, 0.71, 1.00, 1.41, 2.00, 2.83, 
+                    4.00, 5.66, 8.00, 11.20, 16.00, 22.30, 32.00, 
+                    45.00]
+        else:
+            for cat in gs_cats:
+                self.bedload_cols.append(f"Bedload {cat}")
+                if cat == '1.4':
+                    sieve_col = 1.41
+                elif cat == '2.8':
+                    sieve_col = 2.83
+                elif cat == '5.6':
+                    sieve_col = 5.66
+                elif cat == '22':
+                    sieve_col = 22.3
+                else:
+                    sieve_col = float(cat)
+                self.sieve_cols.append(sieve_col)
+
+
 
 if __name__ == "__main__":
     # Run the script
-    grapher = UniversalGrapher()
+    grapher = UniversalGrapher(fig_debug = True)
 
+    ### Export data
     #grapher.process_and_export_data(mode='5min_suite')
-    grapher.process_and_export_data(mode='all_data_xlsx')
+    #grapher.process_and_export_data(mode='all_data_xlsx')
 
+    ### Trap data plots
     #grapher.make_simple_feed_plots()
     #grapher.make_sieve_di_plots(Di=84)
     #grapher.make_simple_sieve_plots()
     #grapher.make_simple_masses_plots()
+
+    ### DEM data plots
     #grapher.make_dem_subplots(plot_2m=True)
     #grapher.make_dem_subplots(plot_2m=False)
     #grapher.make_dem_semivariogram_plots()
     #grapher.make_dem_stats_plots()
     #grapher.make_dem_stats_plots()
     #grapher.make_dem_roughness_plots()
+
+    ### Depth and slope plots
     #grapher.make_loc_shear_plots()
     #grapher.make_flume_shear_plots()
     #grapher.make_mobility_plots(t_interval='step')
     #grapher.make_shields_plots(Di_target='D50')
     #grapher.make_avg_depth_plots(plot_2m=True)
     #grapher.make_avg_slope_plots(plot_2m=False, plot_trends='surface')
+
+    ### Surface GSD data plots
     #!grapher.make_box_gsd_plots(x_name='exp_time', y_name='D50')
     #!grapher.make_box_gsd_plots(x_name='sta_str',  y_name='D50')
     #!grapher.make_mean_gsd_time_plots(y_name=['D16', 'D50', 'D84'])
     #!grapher.make_mean_gsd_time_plots(y_name=['Fsx'])#, 'D90'])
     #grapher.make_gsd_plots(x_name='exp_time', y_name='D84')
     #!grapher.make_gsd_plots(x_name='sta_str',  y_name='D50')
+
+    ### Light table bedload plots
     #!grapher.make_manual_Di_plots()
-    #grapher.make_Qs_plots()
+    #grapher.make_Qs_plots(y_name='Bedload all')
+    #grapher.make_Qs_plots(y_name='D50')
+    #grapher.make_Qs_plots(y_name='D84')
     #grapher.make_Di_ratio_plots()
     #!grapher.make_experiment_plots()
     #!grapher.make_bedload_feed_plots()
+
+    ### Hysteresis plots
     # 'bed-D50', 'bed-D84'
     #grapher.make_pseudo_hysteresis_plots(y_name='bed-D84', plot_2m=True)
     # 'depth', 'slope'
@@ -4879,7 +5205,10 @@ if __name__ == "__main__":
     # 'Bedload all', 'D50', 'D84'
     #grapher.make_pseudo_hysteresis_plots(y_name='Bedload all', plot_2m=False)
     #!grapher.make_hysteresis_plots()
+
+    ### Mass balance and miscellaneous plots
     #!grapher.make_cumulative_plots()
     #grapher.make_cumulative_mass_bal_plots()
     #!grapher.make_transport_histogram_plots()
     #grapher.make_yield_feed_plot()
+    grapher.make_maria_2019_plot()

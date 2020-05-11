@@ -12,13 +12,12 @@ from xlrd.biffh import XLRDError
 #import statsmodels.api as sm
 
 # From helpyr
-from data_loading import DataLoader
-from logger import Logger
-from crawler import Crawler
-from helpyr_misc import ensure_dir_exists
+from helpyr import data_loading
+from helpyr import logger
+from helpyr import crawler as helpyr_crawler
+from helpyr import helpyr_misc as hm
 
 from omnipickle_manager import OmnipickleManager
-from crawler import Crawler
 import global_settings as settings
 
 
@@ -30,11 +29,11 @@ class DEMProcessor:
         self.log_filepath = pjoin(settings.log_dir, "dem_processor.txt")
         
         # Start up logger
-        self.logger = Logger(self.log_filepath, default_verbose=True)
+        self.logger = logger.Logger(self.log_filepath, default_verbose=True)
         self.logger.write(["Begin DEM Processor output", asctime()])
 
         # Start up loader
-        self.loader = DataLoader(self.pickle_destination, logger=self.logger)
+        self.loader = data_loading.DataLoader(self.pickle_destination, logger=self.logger)
         
         # Reload omnimanager
         self.omnimanager = OmnipickleManager(self.logger)
@@ -60,7 +59,7 @@ class DEMProcessor:
     def find_data_files(self):
         # Find all the dem text files
         self.logger.write("")
-        crawler = Crawler(logger=self.logger)
+        crawler = helpyr_crawler.Crawler(logger=self.logger)
         crawler.set_root(self.root)
         self.dem_txt_filepaths = crawler.get_target_files(
                 "*_clean_dem.txt", verbose_file_list=True)
@@ -99,7 +98,7 @@ class DEMProcessor:
 
     def update_omnipickle(self):
         # Add manual data to omnipickle
-        ensure_dir_exists(self.pickle_destination)
+        hm.ensure_dir_exists(self.pickle_destination)
         self.omnimanager.add_dem_data(self.pickle_destination,
                 self.all_dem_data)
 

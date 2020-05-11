@@ -773,7 +773,10 @@ class Experiment:
             self._feed_dataset.picklepath = picklepath
             self._feed_dataset.data = feed_data[self.code]
 
-        return '' # suppress output regarding missing feed data
+            return f'Found data for {self.code}'
+
+        else:
+            return '' # suppress output regarding missing feed data
 
     
     # Processing

@@ -14,6 +14,8 @@ import sklearn.cluster as skl_cluster
 
 from mpl_toolkits.mplot3d import Axes3D
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+from matplotlib.ticker import AutoMinorLocator
 
 from helpyr import logger
 from helpyr import data_loading
@@ -114,13 +116,19 @@ class EOSC510Project:
 
     def clean_Qs_data(self):
         self.logger.write_blankline()
+        self.outliers = {}
+        self.prominence = {}
+        self.p_window = 5 # Note, this includes the center
+        self.p_tolerance = 250
+        self.logger.write(f"Note: Outliers are currently calculated as " +\
+                f"any point +-{self.p_tolerance} g/s from the average " +\
+                f"of the neighboring {self.p_window-1} nodes (prominence)")
         for exp_code in self.Qs_data.keys():
         #for exp_code in ['1A']:
             self.logger.write(f"Cleaning {exp_code}")
             experiment = self.omnimanager.experiments[exp_code]
             raw_pd_data = self.Qs_data[exp_code]
             bedload_all_pd = raw_pd_data['Bedload all']
-            bedload_all = bedload_all_pd.values
             exp_time_hrs = raw_pd_data['exp_time_hrs'].values
             
             # Find prominence
@@ -129,29 +137,24 @@ class EOSC510Project:
             # excludes the center node (kinda like image processing kernels 
             # can) so I can average only the adjacent nodes, hence the more 
             # complicated prominence equation.
-            p_window = 7 # Note, this includes the center
-            p_tolerance = 250
-            self.logger.write(f"Note: Outliers are currently calculated as " +\
-                    f"any point +-{p_tolerance} g/s from the average of the " +\
-                    f"neighboring {p_window-1} nodes (prominence)")
             p_roller = bedload_all_pd.rolling(
-                    p_window, min_periods=1, center=True)
+                    self.p_window, min_periods=1, center=True)
             p_sum = p_roller.sum()
             prominence = \
-                    (1 + 1/(p_window-1)) * bedload_all_pd - \
-                    p_sum / (p_window - 1)
+                    (1 + 1/(self.p_window-1)) * bedload_all_pd - \
+                    p_sum / (self.p_window - 1)
 
             # Identify outliers
-            very_pos = prominence > p_tolerance
-            very_neg = prominence < -p_tolerance
+            very_pos = prominence > self.p_tolerance
+            very_neg = prominence < -self.p_tolerance
             is_outlier = very_pos | very_neg
             outliers_idx = np.where(is_outlier)[0]
 
             # Set outliers to NaN
             #outliers = bedload_all_pd[is_outlier].copy()
             #bedload_all_pd.loc[is_outlier] = np.NaN
-
-            # Some debugging plots
+            #
+            ## Some debugging plots
             #plt.figure()
             #plt.scatter(exp_time_hrs, bedload_all_pd, color='b')
             #plt.scatter(exp_time_hrs[is_outlier], outliers, color='r')
@@ -162,26 +165,9 @@ class EOSC510Project:
             #plt.hlines([-250, 250], 0, 8)
             #plt.title(f"prominence {exp_code}")
             #plt.show()
+            #assert(False)
+            #if False:
             
-            # ### Old method of finding outliers ###
-            ## Roll raw data
-            #window = 400
-            #tolerance = self.rolling_missing_tolerance
-            #raw_roller = bedload_all_pd.rolling(window,
-            #        min_periods=int(window * tolerance), center=True)
-            #rrstd = raw_roller.std()
-            #rrmean = raw_roller.mean()
-
-            ## Find "outliers"
-            ## Outlier if above both a threshold and a multiple of the std dev
-            #std_scale = 3
-            #threshold = 500
-            #with np.errstate(invalid='ignore'):
-            #    above_threshold = bedload_all > threshold
-            #    above_std = bedload_all > (rrmean + rrstd * std_scale).values 
-            #outliers_idx = np.where(
-            #        np.logical_and(above_threshold, above_std))[0]
-
             # Remove outliers
             # Note this changes self.Qs_data
             bedload_columns = [
@@ -191,10 +177,141 @@ class EOSC510Project:
                     'Bedload 22', 'Bedload 32', 'Bedload 45',
                     ]
             #outliers_bedload = bedload_all_pd.iloc[outliers_idx].copy().values
-            col_idx = np.where(np.in1d(raw_pd_data.columns, bedload_columns ))[0]
+
+            # Save data
+            self.prominence[exp_code] = prominence.copy()
+            self.prominence[exp_code].index = exp_time_hrs
+            outliers = bedload_all_pd[is_outlier].copy()
+            outliers.index = exp_time_hrs[is_outlier]
+            #outliers.reset_index(drop=True, inplace=True)
+            self.outliers[exp_code] = outliers
+            col_idx = np.where(np.in1d(raw_pd_data.columns, bedload_columns))[0]
             raw_pd_data.iloc[outliers_idx, col_idx] = np.nan
 
-    def _plot_outliers(self, exp_code, time, bedload, o_time, o_bedload, threshold, std_scale, rrmean, rrstd, crmean, crstd):
+    def _plot_outliers_prominence(self, save_plots=True):
+        # Plots the outliers and prominance for each experiment. Assumes 
+        # clean_Qs_data has been called and that it uses the prominence method
+
+        self.logger.write_blankline()
+        self.logger.write("Plotting outliers")
+
+        fig, axs2D = plt.subplots(nrows=4, ncols=4, sharex=True, figsize=(12,8),
+                gridspec_kw={'height_ratios' : [2,1.5,2,1.5],},
+                )
+        axs = axs2D.flatten()
+
+        exp_codes = sorted(self.Qs_data.keys())
+        p_tolerance = self.p_tolerance
+        d_min, d_max = [0, 1]
+        p_min, p_max = [-2*p_tolerance, 2*p_tolerance]
+
+        data_color = '#1f77b4' # faded blue
+        outlier_color = 'r'
+        for ax_id, exp_code in enumerate(exp_codes):
+            # Get the right data and prominence axes
+            ax_id += 4 if ax_id > 3 else 0
+            d_ax, p_ax = axs[ax_id], axs[ax_id + 4]
+
+            # Get the data
+            raw_pd_data = self.Qs_data[exp_code]
+            outliers = self.outliers[exp_code]
+            prominence = self.prominence[exp_code]
+
+            # Plot the bedload data that will be kept
+            bedload_all = raw_pd_data['Bedload all'].values
+            exp_time_hrs = raw_pd_data['exp_time_hrs'].values
+            d_ax.scatter(exp_time_hrs, bedload_all, label='Keep',
+                    marker='.', c=data_color)
+
+            # Plot the outlier data that will not be kept
+            outlier_bedload = outliers.values
+            outlier_hrs = outliers.index
+            d_ax.scatter(outlier_hrs, outlier_bedload, label='Outlier',
+                    marker='o', color=outlier_color, facecolors='none')
+
+            # Plot the prominence values
+            is_outlier = prominence.index.isin(outlier_hrs)
+            is_keeper = np.logical_not(is_outlier)
+            p_ax.scatter(prominence.index[is_keeper], 
+                    prominence.values[is_keeper], label='Keep',
+                    marker='.', c=data_color)
+            p_ax.scatter(prominence.index[is_outlier], 
+                    prominence.values[is_outlier], label='Outlier', 
+                    marker='o', color=outlier_color, facecolors='none')
+            p_ax.hlines([-p_tolerance, p_tolerance], 0, 8)
+
+            # Get the data and prominence plot limits
+            d_ylim = d_ax.get_ylim()
+            d_min = d_min if d_min < d_ylim[0] else d_ylim[0]
+            d_max = d_max if d_max > d_ylim[1] else d_ylim[1]
+            p_ylim = p_ax.get_ylim()
+            p_min = p_min if p_min < p_ylim[0] else p_ylim[0]
+            p_max = p_max if p_max > p_ylim[1] else p_ylim[1]
+
+        for ax_id, exp_code in enumerate(exp_codes):
+            ax_id += 4 if ax_id > 3 else 0
+            
+            # Fix the y axis limits so like plots share the y limits
+            axs[ax_id].set_ylim((d_min, d_max))
+            axs[ax_id + 4].set_ylim((p_min, p_max))
+            axs[ax_id + 4].yaxis.set_minor_locator(AutoMinorLocator())
+
+            # Format ticks and add exp_code text
+            for ax in (axs[ax_id], axs[ax_id+4]):
+                ax.tick_params( bottom=True, top=True, left=True, right=True,
+                        which='both', labelbottom=False, labelleft=False,
+                        )
+                ax.text(0.95, 0.95, exp_code, va='top', ha='right',
+                        bbox={
+                            'fill' : False,
+                            'visible' : False,
+                            'pad' : 0},
+                        transform=ax.transAxes)
+
+        # Label fontsize
+        label_fontsize = 25
+
+        # Format left column
+        for row in [0,1,2,3]:
+            label_rotation = 'vertical'
+            if row in [0,2]:
+                axs2D[row,0].tick_params(labelleft=True,)
+                #axs2D[row,0].set_ylabel(f"Bedload (g/s)")
+                # Set common y label
+                fig.text(0.001, 0.625, f"Bedload (g/s)", va='center', 
+                        usetex=True, fontsize=label_fontsize, 
+                        rotation=label_rotation)
+            elif row in [1,3]:
+                axs2D[row,3].tick_params(labelright=True,)
+                #axs2D[row,3].set_ylabel(f"Prominence (g/s)")
+                # Set common y label
+                fig.text(0.965, 0.375, f"Prominence (g/s)", va='center', 
+                        usetex=True, fontsize=label_fontsize, 
+                        rotation=label_rotation)
+
+        # Format bottom row
+        for col in [0,1,2,3]:
+            axs2D[3,col].tick_params(labelbottom=True)
+            #axs2D[3,col].set_xlabel(f"Experiment time (hrs)")
+        # Set common x label
+        fig.text(0.5, 0.01, f"Experiment time (hrs)", ha='center', usetex=True,
+                    fontsize=label_fontsize)
+
+        fig.tight_layout()
+        fig.subplots_adjust(top=0.95, left=0.065, bottom=0.075, right=0.925)
+        
+        # Add legend to one of the subplots
+        #axs2D[0,0].legend(loc = 'upper right', bbox_to_anchor = (0.99, 0.85),
+        #        handletextpad = 0.1, borderpad = 0.1)
+        axs2D[0,3].legend(loc = 'upper left', bbox_to_anchor = (1.01, 0.85),
+                handletextpad = 0.1, borderpad = 0.1)
+
+        if save_plots:
+            self.save_figure(fig_name_parts=[f"outliers_prominence_all_exp"])
+        plt.show()
+
+    def _plot_outliers_mean(self, exp_code, time, bedload, o_time, o_bedload, threshold, std_scale, rrmean, rrstd, crmean, crstd):
+        ## This function is outdated.
         plt.figure()
         plt.title(f"{exp_code} Bedload all")
         plt.scatter(time, bedload,
@@ -222,11 +339,16 @@ class EOSC510Project:
         #plt.plot(time, crmean - std_scale * crstd, c='b', linewidth=0.5)
         plt.legend()
 
-        self.save_figure(fig_name_parts=[f"outliers_{exp_code}"])
+        if save_plots:
+            self.save_figure(fig_name_parts=[f"outliers_{exp_code}"])
 
 
-    def analyze_pca_individually(self, save_output=False, make_plots=True):
+    def analyze_pca_individually(self, **kwargs):
         """ Perform PCA on each experiment separately. """
+
+        check = kwarg_checker.get_check_kwarg_fu(kwargs)
+        save_output = check('save_output', default=False)
+        make_plots = check('make_plots', default=True)
 
         self.logger.write_blankline()
         pca_output = {
@@ -240,7 +362,9 @@ class EOSC510Project:
             output = self.logger.run_indented_function(
                     self._analyze_pca_experiment, kwargs={
                         'exp_code' : exp_code, 'save_output' : save_output,
-                        'make_plots' : make_plots},
+                        'make_plots' : make_plots,
+                        'save_plots' : False,
+                        },
                     before_msg=f"Analyzing {exp_code}",
                     after_msg="")
             if save_output:
@@ -252,8 +376,13 @@ class EOSC510Project:
             file_name = "pca-output_individual-data"
             self.save_pca_output(file_name, pca_output)
 
-    def analyze_pca_all(self, save_output=False, make_plots=True):
+    def analyze_pca_all(self, **kwargs):
         """ Perform PCA on all experiments combined. """
+
+        check = kwarg_checker.get_check_kwarg_fu(kwargs)
+        save_output = check('save_output', default=False)
+        make_plots = check('make_plots', default=True)
+        save_plots = check('save_plots', default=True)
 
         self.logger.write_blankline()
         frames = []
@@ -267,11 +396,17 @@ class EOSC510Project:
 
         self.logger.run_indented_function(
                 self._analyze_pca_all, kwargs={'raw_pd_data' : all_data,
-                    'save_output' : save_output, 'make_plots' : make_plots},
+                    'save_output' : save_output, 'make_plots' : make_plots,
+                    'save_plots' : save_plots},
                 before_msg=f"Analyzing all data",
                 after_msg="")
 
-    def _analyze_pca_experiment(self, exp_code, save_output=False, make_plots=True):
+    def _analyze_pca_experiment(self, exp_code, **kwargs):
+        check = kwarg_checker.get_check_kwarg_fu(kwargs)
+        save_output = check('save_output', default=False)
+        make_plots = check('make_plots', default=True)
+        save_plots = check('save_plots', default=False)
+
         experiment = self.omnimanager.experiments[exp_code]
         raw_pd_data = self.Qs_data[exp_code]
         fig_name_parts = [exp_code]
@@ -292,7 +427,11 @@ class EOSC510Project:
         pca_codes = pca_output.pop('pca_codes')
         fig_name_parts += pca_codes
 
-        self._plot_eigenvalues(exp_code, evalues, fig_name_parts)
+        self._plot_eigenvalues(
+                exp_code = exp_code, 
+                evalues = evalues, 
+                fig_name_parts = fig_name_parts, 
+                save_plots=save_plots)
         # Record the number of modes that sum to over 90% or 95% of variance
         # Based on the eigenvalues plots
         self.keep_modes_95 = {
@@ -332,14 +471,34 @@ class EOSC510Project:
 
         if make_plots:
             # Plot PCA variables
-            self._plot_PCs(exp_code, exp_time_hrs, PCs, keep_modes, 
-                    fig_name_parts_k, ylim=(-25, 50))
-            self._plot_PCs(exp_code, exp_time_hrs, PCs, keep_modes, 
-                    fig_name_parts_k)
-            self._plot_PCs_comparisons(exp_code, PCs, keep_modes, 
-                    fig_name_parts_k)
-            self._plot_eigenvectors(exp_code, grain_sizes, evectors, 
-                    keep_modes, fig_name_parts_k)
+            self._plot_PCs(
+                    exp_code = exp_code, 
+                    exp_time_hrs = exp_time_hrs, 
+                    PCs = PCs, 
+                    keep_modes = keep_modes, 
+                    fig_name_parts = fig_name_parts_k, 
+                    ylim=(-25, 50),
+                    save_plots=save_plots)
+            self._plot_PCs(
+                    exp_code = exp_code, 
+                    exp_time_hrs = exp_time_hrs, 
+                    PCs = PCs, 
+                    keep_modes = keep_modes, 
+                    fig_name_parts = fig_name_parts_k, 
+                    save_plots=save_plots)
+            self._plot_PCs_comparisons(
+                    exp_code = exp_code, 
+                    PCs = PCs, 
+                    keep_modes = keep_modes, 
+                    fig_name_parts = fig_name_parts_k, 
+                    save_plots=save_plots)
+            self._plot_eigenvectors(
+                    exp_code = exp_code, 
+                    grain_sizes = grain_sizes, 
+                    evectors = evectors, 
+                    keep_modes = keep_modes, 
+                    fig_name_parts = fig_name_parts_k, 
+                    save_plots=save_plots)
         
         # Reconstruct 
         recon_k = PCs[:, 0:keep_modes] @ evectors[0:keep_modes, :]
@@ -357,20 +516,42 @@ class EOSC510Project:
             recon_fig_name = recon_name.replace(' ', '-')
             fig_name_parts_k = [recon_fig_name] + fig_name_parts_k
 
-            self._plot_single_reconstruction(exp_code, recon_name, keep_modes, 
-                    exp_time_hrs, bedload_all, recon_bedload_all_k,
-                    fig_name_parts=fig_name_parts_k)
-            self._plot_reconstruction_fit_single(exp_code, recon_name,
-                    keep_modes, bedload_all, recon_bedload_all_k,
-                    fig_name_parts=fig_name_parts_k)
+            self._plot_single_reconstruction(
+                    exp_code = exp_code, 
+                    name = recon_name, 
+                    k = keep_modes, 
+                    time = exp_time_hrs, 
+                    original = bedload_all, 
+                    recon = recon_bedload_all_k,
+                    fig_name_parts=fig_name_parts_k, 
+                    save_plots=save_plots)
+            self._plot_reconstruction_fit_single(
+                    exp_code = exp_code, 
+                    name = recon_name, 
+                    k = keep_modes, 
+                    original = bedload_all, 
+                    recon = recon_bedload_all_k,
+                    fig_name_parts=fig_name_parts_k, 
+                    save_plots=save_plots)
 
             fig_name_parts_1 = [recon_fig_name, f"k1"] + fig_name_parts
-            self._plot_single_reconstruction(exp_code, recon_name, 1, 
-                    exp_time_hrs, bedload_all, recon_bedload_all_1,
-                    fig_name_parts=fig_name_parts_1)
-            self._plot_reconstruction_fit_single(exp_code, recon_name,
-                    1, bedload_all, recon_bedload_all_1,
-                    fig_name_parts=fig_name_parts_1)
+            self._plot_single_reconstruction(
+                    exp_code = exp_code, 
+                    name = recon_name, 
+                    k = 1, 
+                    time = exp_time_hrs, 
+                    original = bedload_all, 
+                    recon = recon_bedload_all_1,
+                    fig_name_parts=fig_name_parts_1, 
+                    save_plots=save_plots)
+            self._plot_reconstruction_fit_single(
+                    exp_code = exp_code, 
+                    name = recon_name, 
+                    k = 1, 
+                    original = bedload_all, 
+                    recon = recon_bedload_all_1,
+                    fig_name_parts=fig_name_parts_1, 
+                    save_plots=save_plots)
 
             #plt.show()
             plt.close('all')
@@ -387,7 +568,11 @@ class EOSC510Project:
         else:
             return None
 
-    def _analyze_pca_all(self, raw_pd_data, save_output=False, make_plots=True):
+    def _analyze_pca_all(self, raw_pd_data, **kwargs):
+        check = kwarg_checker.get_check_kwarg_fu(kwargs)
+        save_output = check('save_output', default=False)
+        make_plots = check('make_plots', default=True)
+        save_plots = check('save_plots', default=True)
         exp_code = 'All data' # Hacky solution
         fig_name_parts = ['all-Qs']
 
@@ -408,7 +593,11 @@ class EOSC510Project:
         fig_name_parts += pca_codes
 
         if make_plots:
-            self._plot_eigenvalues(exp_code, evalues, fig_name_parts)
+            self._plot_eigenvalues(
+                    exp_code = exp_code, 
+                    evalues = evalues, 
+                    fig_name_parts = fig_name_parts,
+                    save_plots=save_plots)
         # Record the number of modes that sum to over 90% or 95% of variance
         # Based on the eigenvalues plots
 
@@ -436,12 +625,27 @@ class EOSC510Project:
 
         if make_plots:
             # Plot PCA variables
-            self._plot_PCs(exp_code, exp_time_hrs, PCs, keep_modes, 
-                    fig_name_parts_k, ylim=(-25, 50))
-            self._plot_PCs_comparisons(exp_code, PCs, keep_modes, 
-                    fig_name_parts_k)
-            self._plot_eigenvectors(exp_code, grain_sizes, evectors, 
-                    keep_modes, fig_name_parts_k)
+            self._plot_PCs(
+                    exp_code = exp_code, 
+                    exp_time_hrs = exp_time_hrs, 
+                    PCs = PCs, 
+                    keep_modes = keep_modes, 
+                    fig_name_parts = fig_name_parts_k, 
+                    ylim=(-25, 50), 
+                    save_plots=save_plots)
+            #self._plot_PCs_comparisons(
+            #        exp_code = exp_code, 
+            #        PCs = PCs, 
+            #        keep_modes = keep_modes, 
+            #        fig_name_parts = fig_name_parts_k, 
+            #        save_plots=save_plots)
+            self._plot_eigenvectors(
+                    exp_code = exp_code, 
+                    grain_sizes = grain_sizes, 
+                    evectors = evectors, 
+                    keep_modes = keep_modes, 
+                    fig_name_parts = fig_name_parts_k, 
+                    save_plots=save_plots)
         
         # Reconstruct 
         recon_k = PCs[:, 0:keep_modes] @ evectors[0:keep_modes, :]
@@ -459,36 +663,58 @@ class EOSC510Project:
             recon_fig_name = recon_name.replace(' ', '-')
             fig_name_parts_k = [recon_fig_name] + fig_name_parts_k
 
-            self._plot_single_reconstruction(exp_code, recon_name, keep_modes, 
-                    exp_time_hrs, bedload_all, recon_bedload_all_k,
-                    fig_name_parts=fig_name_parts_k)
-            self._plot_reconstruction_fit_single(exp_code, recon_name,
-                    keep_modes, bedload_all, recon_bedload_all_k,
-                    fig_name_parts=fig_name_parts_k)
+            self._plot_single_reconstruction(
+                    exp_code = exp_code, 
+                    name = recon_name, 
+                    k = keep_modes, 
+                    time = exp_time_hrs, 
+                    original = bedload_all, 
+                    recon = recon_bedload_all_k,
+                    fig_name_parts=fig_name_parts_k, 
+                    save_plots=save_plots)
+            self._plot_reconstruction_fit_single(
+                    exp_code = exp_code, 
+                    name = recon_name, 
+                    k = keep_modes, 
+                    original = bedload_all, 
+                    recon = recon_bedload_all_k,
+                    fig_name_parts=fig_name_parts_k, 
+                    save_plots=save_plots)
 
             fig_name_parts_1 = [recon_fig_name, f"k1"] + fig_name_parts
-            self._plot_single_reconstruction(exp_code, recon_name, 1, 
-                    exp_time_hrs, bedload_all, recon_bedload_all_1,
-                    fig_name_parts=fig_name_parts_1)
-            self._plot_reconstruction_fit_single(exp_code, recon_name,
-                    1, bedload_all, recon_bedload_all_1,
-                    fig_name_parts=fig_name_parts_1)
+            #self._plot_single_reconstruction(
+            #        exp_code = exp_code, 
+            #        name = recon_name, 
+            #        k = 1, 
+            #        time = exp_time_hrs, 
+            #        original = bedload_all, 
+            #        recon = recon_bedload_all_1,
+            #        fig_name_parts=fig_name_parts_1, 
+            #        save_plots=save_plots)
+            #self._plot_reconstruction_fit_single(
+            #        exp_code = exp_code, 
+            #        name = recon_name, 
+            #        k = 1, 
+            #        original = bedload_all, 
+            #        recon = recon_bedload_all_1,
+            #        fig_name_parts=fig_name_parts_1, 
+            #        save_plots=save_plots)
 
-            #plt.show()
-
+            plt.show()
             plt.close('all')
 
-        if save_output:
-            # Save the pca output for other use.
-            pca_output = {
-                    'evectors' : evectors,
-                    'evalues' : evalues,
-                    'PCs' : PCs,
-                    'keep_modes' : keep_modes,
-                    'is_concat' : True,
-            }
-            file_name = "pca-output_all-data"
-            self.save_pca_output(file_name, pca_output)
+            if save_output:
+                # Save the pca output for other use.
+                pca_output = {
+                        'evectors' : evectors,
+                        'evalues' : evalues,
+                        'PCs' : PCs,
+                        'keep_modes' : keep_modes,
+                        'is_concat' : True,
+                }
+                file_name = "pca-output_all-data"
+                self.save_pca_output(file_name, pca_output)
+
 
     def do_pca(self, raw_gsd_data, normalize=False, standardize=True):
         # raw_gsd_data is dataframe of only grain size classes over time.
@@ -602,7 +828,16 @@ class EOSC510Project:
 
 
     ## Plotting functions
-    def _plot_reconstruction_fit_single(self, exp_code, name, k, original, recon, fig_name_parts):
+    def _plot_reconstruction_fit_single(self, **kwargs):
+        check = kwarg_checker.get_check_kwarg_fu(kwargs)
+        exp_code = check('exp_code', required=True)
+        name = check('name', required=True)
+        k = check('k', required=True)
+        original = check('original', required=True)
+        recon = check('recon', required=True)
+        fig_name_parts = check('fig_name_parts', required=True)
+        save_plots = check('save_plots', default=True)
+
         # Do linear regression to get r2
         m, b, r, p, stderr = stats_linregress(recon, original)
 
@@ -635,9 +870,20 @@ class EOSC510Project:
 
         plt.legend()
 
-        self.save_figure(fig_name_parts=[f"recon_fit"] + fig_name_parts)
+        if save_plots:
+            self.save_figure(fig_name_parts=[f"recon_fit"] + fig_name_parts)
 
-    def _plot_single_reconstruction(self, exp_code, name, k, time, original, recon, fig_name_parts):
+    def _plot_single_reconstruction(self, **kwargs):
+        check = kwarg_checker.get_check_kwarg_fu(kwargs)
+        exp_code = check('exp_code', required=True)
+        name = check('name', required=True)
+        k = check('k', required=True)
+        time = check('time', required=True)
+        original = check('original', required=True)
+        recon = check('recon', required=True)
+        fig_name_parts = check('fig_name_parts', required=True)
+        save_plots = check('save_plots', default=True)
+
         # Plot it
         plt.figure()
         plt.title(f"{exp_code} Reconstructed {name} (k={k})")
@@ -660,9 +906,18 @@ class EOSC510Project:
 
         plt.legend()
 
-        self.save_figure(fig_name_parts=[f"recon"] + fig_name_parts)
+        if save_plots:
+            self.save_figure(fig_name_parts=[f"recon"] + fig_name_parts)
 
-    def _plot_eigenvectors(self, exp_code, grain_sizes, evectors, keep_modes, fig_name_parts):
+    def _plot_eigenvectors(self, **kwargs):
+        check = kwarg_checker.get_check_kwarg_fu(kwargs)
+        exp_code = check('exp_code', required=True)
+        grain_sizes = check('grain_sizes', required=True)
+        evectors = check('evectors', required=True)
+        keep_modes = check('keep_modes', required=True)
+        fig_name_parts = check('fig_name_parts', required=True)
+        save_plots = check('save_plots', default=True)
+
         # plot each eigenvector
         # sklearn puts evector modes in rows
         fig, axs, axs_shape= self._get_squarish_subplots_grid(keep_modes)
@@ -692,9 +947,17 @@ class EOSC510Project:
 
         plt.tight_layout(rect=[0, 0, 1, 0.95])
 
-        self.save_figure(fig_name_parts=[f"evectors"] + fig_name_parts)
+        if save_plots:
+            self.save_figure(fig_name_parts=[f"evectors"] + fig_name_parts)
 
-    def _plot_PCs_comparisons(self, exp_code, PCs, keep_modes, fig_name_parts):
+    def _plot_PCs_comparisons(self, **kwargs):
+        check = kwarg_checker.get_check_kwarg_fu(kwargs)
+        exp_code = check('exp_code', required=True)
+        PCs = check('PCs', required=True)
+        keep_modes = check('keep_modes', required=True)
+        fig_name_parts = check('fig_name_parts', required=True)
+        save_plots = check('save_plots', default=True)
+
         # plot comparisons between PCs
         fig, axs, axs_shape = self._get_squarish_subplots_grid(keep_modes-1)
         nrows, ncols = axs_shape
@@ -726,9 +989,19 @@ class EOSC510Project:
 
         plt.tight_layout(rect=[0, 0, 1, 0.95])
 
-        self.save_figure(fig_name_parts=[f"PCs_comparisons"] + fig_name_parts)
+        if save_plots:
+            self.save_figure(fig_name_parts=[f"PCs_comparisons"] + fig_name_parts)
 
-    def _plot_PCs(self, exp_code, exp_time_hrs, PCs, keep_modes, fig_name_parts, ylim=None):
+    def _plot_PCs(self, **kwargs):
+        check = kwarg_checker.get_check_kwarg_fu(kwargs)
+        exp_code = check('exp_code', required=True)
+        exp_time_hrs = check('exp_time_hrs', required=True)
+        PCs = check('PCs', required=True)
+        keep_modes = check('keep_modes', required=True)
+        fig_name_parts = check('fig_name_parts', required=True)
+        ylim = check('ylim', default=None)
+        save_plots = check('save_plots', default=True)
+
         # Plot each PC
         fig, axs = plt.subplots(nrows=keep_modes, sharex=True, sharey=True)
         plt.suptitle(f"{exp_code} PCs for {keep_modes} modes")
@@ -743,9 +1016,16 @@ class EOSC510Project:
 
         plt.tight_layout(rect=[0, 0, 1, 0.95])
         
-        self.save_figure(fig_name_parts=[f"PCs"] + fig_name_parts)
+        if save_plots:
+            self.save_figure(fig_name_parts=[f"PCs"] + fig_name_parts)
 
-    def _plot_eigenvalues(self, exp_code, evalues, fig_name_parts):
+    def _plot_eigenvalues(self, **kwargs):
+        check = kwarg_checker.get_check_kwarg_fu(kwargs)
+        exp_code = check('exp_code', required=True)
+        evalues = check('evalues', required=True)
+        fig_name_parts = check('fig_name_parts', required=True)
+        save_plots = check('save_plots', default=True)
+
         fig, axs = plt.subplots(nrows=2)
         x_modes = np.arange(evalues.size)+1
         axs[0].set_title(f"{exp_code} Variance")
@@ -770,9 +1050,17 @@ class EOSC510Project:
 
         plt.tight_layout()
 
-        self.save_figure(fig_name_parts=[f"evalues"] + fig_name_parts)
+        if save_plots:
+            self.save_figure(fig_name_parts=[f"evalues"] + fig_name_parts)
 
-    def plot_3d_centroids(self, centroids, ax, label='', show_legend=False, title=''):
+    def plot_3d_centroids(self, **kwargs):
+        check = kwarg_checker.get_check_kwarg_fu(kwargs)
+        centroids = check('centroids', required=True)
+        ax = check('ax', required=True)
+        label = check('label', default='')
+        show_legend = check('show_legend', default=False)
+        title = check('title', default='')
+
         assert(centroids.shape[1] == 3)
         kx, ky, kz = [centroids[:,i] for i in range(3)]
         ax.scatter(kx, ky, kz, label=label)
@@ -948,7 +1236,9 @@ class EOSC510Project:
         ## Plot pass 1
         write_log('Plotting Pass 1')
         self._plot_p1_centroids_subplots(
-                p1_centroids_dict, exp_codes, n_p1_clusters)
+                p1_centroids_dict = p1_centroids_dict, 
+                exp_codes = exp_codes, 
+                n_p1_clusters = n_p1_clusters)
 
         ## Pass 2. Agglomerative clustering on pass 1 centroids
         for n_p2_clusters in n_p2_clusters_list:
@@ -967,8 +1257,11 @@ class EOSC510Project:
             # Plot pass 2
             write_log('Plotting Pass 2')
 
-            self._plot_p2_centroids_subplot(p2_centroids,
-                    subplots_shape, n_p1_clusters, n_p2_clusters)
+            self._plot_p2_centroids_subplot(
+                    p2_centroids = p2_centroids, 
+                    subplots_shape = subplots_shape, 
+                    n_p1_clusters = n_p1_clusters, 
+                    n_p2_clusters = n_p2_clusters)
 
     def _plot_p1_centroids_subplots(self, p1_centroids_dict, exp_codes, n_p1_clusters):
         # Plot the subplots figure for a p1 agglom run
@@ -995,7 +1288,9 @@ class EOSC510Project:
 
             # Plot each experiment's centroids in one large subplots figure
             centroids = p1_centroids_dict[exp_code]
-            self.plot_3d_centroids(centroids, p1_centroids_ax3d,
+            self.plot_3d_centroids(
+                    centroids = centroids, 
+                    ax = p1_centroids_ax3d,
                     title=f"{exp_code}",
                     )
             #dendrogram = scipy_hierarchy.dendrogram(agglom_links, ax=ax)
@@ -1028,9 +1323,10 @@ class EOSC510Project:
                 ax_kwargs = {'projection' : '3d'},
                 suptitle= f"2 Pass agglomerative clustering\n",
                 )
-        self.plot_3d_centroids(p2_centroids, 
-            p2_centroids_subplots_ax3d,
-            title=f"{n_p1_clusters} -> {n_p2_clusters} agglom",
+        self.plot_3d_centroids(
+                centroids = p2_centroids, 
+                ax = p2_centroids_subplots_ax3d,
+                title=f"{n_p1_clusters} -> {n_p2_clusters} agglom",
             )
 
 
@@ -1195,8 +1491,9 @@ if __name__ == "__main__":
     # Run the script
     project = EOSC510Project(debug_mode=False)
     project.load_raw_data()
+    project._plot_outliers_prominence()
     #project.analyze_pca_individually(make_plots=True, save_output=True)
-    project.analyze_pca_all(make_plots=True, save_output=True)
+    #project.analyze_pca_all(make_plots=True, save_output=True, save_plots=True)
 
     #project.reload_pca_pickle('all')
     #project.analyze_clusters_all()

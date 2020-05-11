@@ -27,6 +27,7 @@ sum_feed_Di = {
     'D84' : 16.770694, # mm; calculated from 5 feed samples
 }
 feed_rates = {
+        # An 8-element array representing feed rate (kg) per hour
         '1A' : np.zeros(8),
         '1B' : np.zeros(8),
         '2A' : np.concatenate(([0], np.ones(7))) * 800 / 7,

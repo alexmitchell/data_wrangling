@@ -12,10 +12,10 @@ from xlrd.biffh import XLRDError
 #import statsmodels.api as sm
 
 # From helpyr
-from helpyr.data_loading import DataLoader
-from helpyr.logger import Logger
-from helpyr.crawler import Crawler
-from helpyr.helpyr_misc import ensure_dir_exists
+from helpyr import data_loading
+from helpyr import logger
+from helpyr import crawler as helpyr_crawler
+from helpyr import helpyr_misc as hm
 
 from omnipickle_manager import OmnipickleManager
 import global_settings as settings
@@ -29,11 +29,11 @@ class ManualProcessor:
         self.log_filepath = pjoin(settings.log_dir, "manual_processor.txt")
         
         # Start up logger
-        self.logger = Logger(self.log_filepath, default_verbose=True)
+        self.logger = logger.Logger(self.log_filepath, default_verbose=True)
         self.logger.write(["Begin Manual Processor output", asctime()])
 
         # Start up loader
-        self.loader = DataLoader(self.pickle_destination, logger=self.logger)
+        self.loader = data_loading.DataLoader(self.pickle_destination, logger=self.logger)
         
         # Reload omnimanager
         self.omnimanager = OmnipickleManager(self.logger)
@@ -59,7 +59,7 @@ class ManualProcessor:
     def find_data_files(self):
         ### Find all the flow depth and trap masses text files
         self.logger.write("")
-        crawler = Crawler(logger=self.logger)
+        crawler = helpyr_crawler.Crawler(logger=self.logger)
         crawler.set_root(self.root)
         
         # example filename: 3B-flow-depths.xlsx  3B-masses.xlsx
@@ -579,7 +579,7 @@ class ManualProcessor:
 
     def update_omnipickle(self):
         # Add manual data to omnipickle
-        ensure_dir_exists(self.pickle_destination)
+        hm.ensure_dir_exists(self.pickle_destination)
         if self.all_depth_data:
             self.omnimanager.add_depth_data(
                     self.pickle_destination, self.all_depth_data)

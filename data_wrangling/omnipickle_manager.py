@@ -135,6 +135,7 @@ class OmnipickleManager:
         # Needed for periods that don't have Qs data.
         period_data = PeriodData.make_empty(
                 exp_code, limb, discharge, period_range)
+        self.logger.write(f"Manually adding period {period_data.name}")
 
         if exp_code not in self.experiments:
             self.experiments[exp_code] = Experiment(exp_code)
