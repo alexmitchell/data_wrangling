@@ -1,3 +1,15 @@
+################################################################################
+New goals (26/11/2021):
+- Break the larger program into smaller scripts that can be run individually.
+- Simplify code so that other programmers (or myself at a later date) can 
+  easily make sense of it and use it.
+- Have the code produce csv files for intermediate and final data, so I can 
+  easily generate datasets for non-programmers who don't know how to run the 
+  scripts.
+- Remove dependencies to non-standard libraries (like helpyr).
+
+################################################################################
+################################################################################
 Started this file way too late...
 
 Lighttable workflow:
