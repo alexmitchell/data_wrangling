@@ -3,6 +3,7 @@ numpy
 matplotlib
 pandas
 scikit-learn
+pytest
 
 # For xlsx i/o
 xlrd

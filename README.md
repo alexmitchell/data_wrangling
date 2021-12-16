@@ -1,4 +1,11 @@
 ################################################################################
+Brief installation instructions:
+> conda create --name data_wrangling_dev
+> conda activate data_wrangling_dev
+# Optional to create .env and .unenv files to make activation automatic
+> conda install --file requirements.txt
+> python setup.py develop
+################################################################################
 New goals (26/11/2021):
 - Break the larger program into smaller scripts that can be run individually.
 - Simplify code so that other programmers (or myself at a later date) can 
