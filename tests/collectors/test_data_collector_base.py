@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 
+import pytest
 import os.path
 from io import StringIO
-
 import numpy as np
 import pandas as pd
 from pandas.testing import assert_frame_equal
@@ -326,3 +326,31 @@ def test_run_collector(tmp_path):
     saved_data = pd.read_csv(saved_filepath, index_col=0)
     print(saved_data)
     assert_frame_equal(answer_data, saved_data)
+
+
+@pytest.mark.parametrize("outcome,filepath,pattern",[
+    # Matching
+    (True, '/a/b/c/matching_text_A.txt', 'matching_text_?.txt'),
+    (True, '/a/b/c/matching_text_A.txt', 'matching_text_A.txt'),
+    (True, '/a/d/matching_text_B.txt'  , 'matching_text_?.txt'),
+    (True, 'matching_text_C.txt'       , 'matching_text_?.txt'),
+    (True, 'matching_text_D.txt'       , ['matching_text_?.txt', 'other_pattern']),
+    (True, 'matching_text_D.txt'       , ['matching_text_?.txt', '*.txt']),
+    (True, 'matching_text_D.txt'       , ['*.txt', '*.tex']),
+    (True, '/a/b/c/other_text.tex'     , ['*.txt', '*.tex']),
+
+    # Not matching
+    (False, '/a/b/c/other_text_A.txt'   , 'matching_text_?.txt'),
+    (False, '/a/d/other_text_B.txt'     , 'matching_text_?.txt'),
+    (False, 'other_text_C.txt'          , 'matching_text_?.txt'),
+    (False, '/a/b/c/matching_text_A.tex', 'matching_text_?.txt'),
+    (False, '/a/d/matching_text_B.tex'  , 'matching_text_?.txt'),
+    (False, 'matching_text_C.tex'       , 'matching_text_?.txt'),
+    (False, 'some_text_C.tex'           , ['spam.txt', 'eggs.txt']),
+    ])
+
+def test_file_match_by_name(tmp_path, filepath, pattern, outcome):
+    fake_collector = FakeCollector(tmp_path, tmp_path)
+
+    assert outcome == fake_collector.file_match_by_name(filepath, pattern)
+
