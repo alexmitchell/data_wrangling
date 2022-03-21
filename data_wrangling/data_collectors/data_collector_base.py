@@ -4,8 +4,10 @@ from os import walk as os_walk
 from os.path import join as path_join
 from os.path import (
         basename,
+        dirname,
         splitext,
         )
+import fnmatch
 
 class DataCollectorBase:
 
@@ -19,7 +21,9 @@ class DataCollectorBase:
         self.root_dir = data_root_dir
         self.output_dir = output_dir
 
-    """ Functions that inheriting collector class needs to define"""
+        self.name = None
+
+    """ Functions that inheriting collector class needs to override"""
     def is_my_file(self, filepath):
         """ Test if the provided filepath matches what this collector is 
         supposed to process.
@@ -130,6 +134,9 @@ class DataCollectorBase:
 
         # Find files in data tree
         filepaths = self.gather_filepaths()
+        if len(filepaths) == 0:
+            print("{self.name or ''} collector could not find any data")
+            return None
 
         # Load data
         data_dict = self.load_data_files(filepaths)
@@ -206,4 +213,37 @@ class DataCollectorBase:
                     filepaths.append(fpath)
 
         return filepaths
+
+    def file_match_by_name(self, filepath, match_patterns):
+        """ A simple matching function that extracts the filename from a 
+        filepath and checks for the provided patterns. Intended for use with 
+        the is_my_file method.
+
+        Parameters
+        ----------
+        filepath : string or string-like path objects
+            The filepath to check.
+
+        match_patterns : string or list of strings
+            Pattern or list of patterns to check the filename with. These 
+            patterns are used directly by fnmatch and accept wildcards like 
+            '?', '*' and '[]'. See fnmatch documentation 
+            (https://docs.python.org/3/library/fnmatch.html) for more 
+            information.
+
+        Returns
+        -------
+        bool
+            Returns true if the filename matches any of the provided patterns.
+        """
+
+        if isinstance(match_patterns, str):
+            # Convert a single string into a list with one string element
+            match_patterns = [match_patterns]
+
+        filename = basename(filepath)
+        #directory = dirname(filepath)
+
+        matches = [fnmatch.fnmatch(filename, p) for p in match_patterns]
+        return any(matches)
 
