@@ -2,6 +2,7 @@ test_output/
 log-files/
 setup.py
 src/__init__.py
+logs/
 
 # Swap files
 *.swp
