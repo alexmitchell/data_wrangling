@@ -1039,7 +1039,7 @@ def setup_log_file(is_practice):
 
     else:
         intro_msg = "Executing a real run"
-        timestamp_str = timestamp.strftime("%Y-%m-%d_%H:%M:%S.%f")
+        timestamp_str = timestamp.strftime("%Y-%m-%d_%Hh-%Mm-%S.%fs")
         log_filename = f'collapse_data_tree_log_{timestamp_str}.txt'
 
     # Create/clear the log file
